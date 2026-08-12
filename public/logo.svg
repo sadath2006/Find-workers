@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Outer Shield Gradient -->
+    <linearGradient id="shieldGrad" x1="15%" y1="5%" x2="85%" y2="95%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="40%" stop-color="#06b6d4" />
+      <stop offset="75%" stop-color="#0d9488" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+
+    <!-- Scan Beam Glow Filter -->
+    <filter id="neonGlow" x="-20%" y="-50%" width="140%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <!-- Pin Gradient -->
+    <linearGradient id="pinGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0d9488" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+
+    <!-- Network Line Gradient -->
+    <linearGradient id="routeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="50%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+  </defs>
+
+  <!-- 1. Outer Double Shield -->
+  <g fill="none" stroke="url(#shieldGrad)" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Outer Thick Shield -->
+    <path d="M 256,42 L 420,80 C 438,235 256,470 256,470 C 256,470 74,235 92,80 Z" stroke-width="16" />
+    <!-- Inner Parallel Shield Line -->
+    <path d="M 256,64 L 400,98 C 416,230 256,446 256,446 C 256,446 96,230 112,98 Z" stroke-width="6" opacity="0.9" />
+  </g>
+
+  <!-- 2. Biometric 3D Face Polygon Mesh -->
+  <g fill="none" stroke="#0284c7" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Face Contour -->
+    <polygon points="175,140 256,125 337,140 357,185 347,245 327,305 292,340 256,350 220,340 185,305 165,245 155,185" />
+    
+    <!-- Forehead & Eyebrow Structure -->
+    <polyline points="175,140 215,160 256,150 297,160 337,140" />
+    <line x1="256" y1="125" x2="256" y2="150" />
+    <line x1="215" y1="160" x2="256" y2="185" />
+    <line x1="297" y1="160" x2="256" y2="185" />
+    <line x1="215" y1="160" x2="185" y2="185" />
+    <line x1="297" y1="160" x2="327" y2="185" />
+
+    <!-- Eye Sockets Wireframe -->
+    <polygon points="185,185 220,185 210,205 180,200" />
+    <polygon points="327,185 292,185 302,205 332,200" />
+
+    <!-- Nose Bridge & Tip Mesh -->
+    <polygon points="256,185 242,230 256,248 270,230" fill="#0284c7" fill-opacity="0.15" />
+    <line x1="210" y1="205" x2="242" y2="230" />
+    <line x1="302" y1="205" x2="270" y2="230" />
+
+    <!-- Cheeks & Jawlines -->
+    <line x1="165" y1="245" x2="210" y2="205" />
+    <line x1="347" y1="245" x2="302" y2="205" />
+    <line x1="165" y1="245" x2="242" y2="230" />
+    <line x1="347" y1="245" x2="270" y2="230" />
+    <line x1="185" y1="305" x2="242" y2="280" />
+    <line x1="327" y1="305" x2="270" y2="280" />
+
+    <!-- Mouth & Chin Polygon -->
+    <polygon points="230,280 256,270 282,280 270,295 256,298 242,295" fill="#0284c7" fill-opacity="0.2" />
+    <line x1="256" y1="248" x2="256" y2="270" />
+    <line x1="256" y1="298" x2="256" y2="350" />
+    <line x1="242" y1="295" x2="220" y2="340" />
+    <line x1="270" y1="295" x2="292" y2="340" />
+  </g>
+
+  <!-- 3. Glowing Horizontal Scan Beam across Eyes -->
+  <g filter="url(#neonGlow)">
+    <!-- Backing Glow Area -->
+    <polygon points="120,215 392,215 410,225 102,225" fill="#06b6d4" opacity="0.25" />
+    <!-- Bright Cyan Scan Line -->
+    <line x1="110" y1="220" x2="402" y2="220" stroke="#00f0ff" stroke-width="5" stroke-linecap="round" />
+    <!-- Glowing Node Dots -->
+    <circle cx="180" cy="220" r="5" fill="#ffffff" stroke="#00f0ff" stroke-width="3" />
+    <circle cx="256" cy="220" r="6" fill="#ffffff" stroke="#00f0ff" stroke-width="3" />
+    <circle cx="332" cy="220" r="5" fill="#ffffff" stroke="#00f0ff" stroke-width="3" />
+  </g>
+
+  <!-- 4. Location Map Pins & Network Route Path -->
+  <!-- Network Route Line with Circular Nodes -->
+  <polyline points="155,395 190,365 240,390 285,350 325,385 355,365" fill="none" stroke="url(#routeGrad)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+  
+  <circle cx="190" cy="365" r="5" fill="#0284c7" stroke="#ffffff" stroke-width="2" />
+  <circle cx="240" cy="390" r="5" fill="#10b981" stroke="#ffffff" stroke-width="2" />
+  <circle cx="285" cy="350" r="5" fill="#06b6d4" stroke="#ffffff" stroke-width="2" />
+
+  <!-- Left Map Pin -->
+  <g transform="translate(150, 360)">
+    <path d="M 0,-22 C -10,-22 -16,-14 -16,-4 C -16,8 0,20 0,20 C 0,20 16,8 16,-4 C 16,-14 10,-22 0,-22 Z" fill="url(#pinGrad)" stroke="#ffffff" stroke-width="2" />
+    <circle cx="0" cy="-6" r="5" fill="#ffffff" />
+  </g>
+
+  <!-- Right Map Pin -->
+  <g transform="translate(360, 330)">
+    <path d="M 0,-22 C -10,-22 -16,-14 -16,-4 C -16,8 0,20 0,20 C 0,20 16,8 16,-4 C 16,-14 10,-22 0,-22 Z" fill="url(#shieldGrad)" stroke="#ffffff" stroke-width="2" />
+    <circle cx="0" cy="-6" r="5" fill="#ffffff" />
+  </g>
+</svg>

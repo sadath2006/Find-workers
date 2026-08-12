@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Entities Collection (Rooms & Companies)
+    match /entities/{entityId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Workers Collection
+    match /workers/{workerId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Comments Collection
+    match /comments/{commentId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profile",
+      "description": "User account, role hierarchy, and mobile number information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "role": { "type": "string" },
+        "isApproved": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "displayName", "email", "role"]
+    },
+    "entities": {
+      "title": "Entity Record",
+      "description": "Company or Room registered by entity owners",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "name": { "type": "string" },
+        "registrationNumber": { "type": "string" },
+        "address": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "ownerMobile": { "type": "string" },
+        "staffMobiles": { "type": "array" },
+        "hasUpdatedDetails": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "type", "name", "ownerUid"]
+    },
+    "workers": {
+      "title": "Worker Record",
+      "description": "Worker profiles registered under entities by owners or staff",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "entityId": { "type": "string" },
+        "entityName": { "type": "string" },
+        "name": { "type": "string" },
+        "mobile": { "type": "string" },
+        "skill": { "type": "string" },
+        "registeredByUid": { "type": "string" },
+        "registeredByName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "entityId", "name", "mobile", "skill"]
+    },
+    "comments": {
+      "title": "Comment Record",
+      "description": "Comments posted by public members",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "authorUid", "authorName", "content"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "users",
+      "description": "User profiles and role hierarchy permissions"
+    },
+    "entities/{entityId}": {
+      "schema": "entities",
+      "description": "Registered rooms and companies"
+    },
+    "workers/{workerId}": {
+      "schema": "workers",
+      "description": "Registered local workers"
+    },
+    "comments/{commentId}": {
+      "schema": "comments",
+      "description": "User comments and feedback"
+    }
+  }
+}
