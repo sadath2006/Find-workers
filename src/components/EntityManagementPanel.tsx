@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { UserProfile, EntityRecord, WorkerRecord } from '../types';
+import { WorkerRegistrationModal } from './WorkerRegistrationModal';
 import { 
   createOrUpdateEntity, 
   getOwnerEntities, 
@@ -530,61 +531,73 @@ export const EntityManagementPanel: React.FC<EntityManagementPanelProps> = ({ cu
               </h5>
 
               <button
-                onClick={() => setShowWorkerForm(!showWorkerForm)}
-                className="py-1 px-2.5 bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/30 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center space-x-1"
+                onClick={() => setShowWorkerForm(true)}
+                className="py-1.5 px-3 bg-red-600 hover:bg-red-700 text-white border border-red-500/30 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center space-x-1 shadow-sm"
               >
-                <Plus className="w-3 h-3" />
-                <span>Add Worker</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>Register Worker</span>
               </button>
             </div>
 
-            {/* Worker Form */}
+            {/* Worker Modal */}
             {showWorkerForm && (
-              <form onSubmit={handleAddWorker} className="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-2">
-                <input
-                  type="text"
-                  value={workerName}
-                  onChange={e => setWorkerName(e.target.value)}
-                  placeholder="Worker Full Name *"
-                  required
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white"
-                />
-                <input
-                  type="tel"
-                  value={workerMobile}
-                  onChange={e => setWorkerMobile(e.target.value)}
-                  placeholder="Worker Mobile Number *"
-                  required
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono"
-                />
-                <input
-                  type="text"
-                  value={workerSkill}
-                  onChange={e => setWorkerSkill(e.target.value)}
-                  placeholder="Trade / Skill (e.g. Electrician, Carpenter)"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white"
-                />
-                <button
-                  type="submit"
-                  disabled={actionLoading}
-                  className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 rounded-lg text-xs cursor-pointer shadow-sm"
-                >
-                  {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin mx-auto" /> : <span>Submit Worker</span>}
-                </button>
-              </form>
+              <WorkerRegistrationModal
+                isOpen={showWorkerForm}
+                onClose={() => setShowWorkerForm(false)}
+                currentUser={currentUser}
+                preSelectedEntity={selectedEntity}
+                onWorkerAdded={async () => {
+                  if (selectedEntity) {
+                    const updated = await getWorkersForEntity(selectedEntity.id);
+                    setWorkers(updated);
+                  }
+                }}
+              />
             )}
 
             {/* Worker List */}
             {workers.length > 0 ? (
               <div className="space-y-2">
                 {workers.map(w => (
-                  <div key={w.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs flex items-center justify-between">
-                    <div>
-                      <h6 className="font-bold text-white">{w.name}</h6>
-                      <p className="text-[10px] text-amber-400 font-semibold">{w.skill}</p>
-                      <p className="text-[10px] text-slate-400 font-mono mt-0.5">{w.mobile}</p>
+                  <div key={w.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800/90 text-xs flex items-center justify-between space-x-3">
+                    <div className="flex items-center space-x-3 min-w-0 flex-1">
+                      {w.photoURL ? (
+                        <img
+                          src={w.photoURL}
+                          alt={w.name}
+                          className="w-11 h-11 rounded-xl object-cover border border-slate-700 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-11 h-11 rounded-xl bg-amber-500/20 text-amber-400 font-black flex items-center justify-center shrink-0 border border-amber-500/30 text-base">
+                          {w.name.charAt(0)}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <div className="flex items-center space-x-2">
+                          <h6 className="font-extrabold text-white text-xs truncate">{w.name}</h6>
+                          {w.skill && (
+                            <span className="text-[9px] text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-800/50 shrink-0 font-semibold">
+                              {w.skill}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-300">
+                          {w.companyEntityName && (
+                            <span className="text-indigo-300 font-medium">🏢 {w.companyEntityName}</span>
+                          )}
+                          {w.roomEntityName && (
+                            <span className="text-emerald-300 font-medium">🏠 {w.roomEntityName}</span>
+                          )}
+                        </div>
+                        {w.mobile && (
+                          <p className="text-[10px] text-slate-400 font-mono">📱 {w.mobile}</p>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-[9px] text-slate-500 font-mono">By {w.registeredByName}</span>
+
+                    <div className="text-right shrink-0">
+                      <span className="text-[9px] text-slate-500 font-mono block">By {w.registeredByName}</span>
+                    </div>
                   </div>
                 ))}
               </div>

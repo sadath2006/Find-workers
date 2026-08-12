@@ -4,6 +4,7 @@ import { Logo } from './Logo';
 import { RoleBadge } from './RoleBadge';
 import { UserManagementModal } from './UserManagementModal';
 import { EntityManagementPanel } from './EntityManagementPanel';
+import { WorkerRegistrationModal } from './WorkerRegistrationModal';
 import { FaceScannerModal } from './FaceScannerModal';
 import { CommentsSection } from './CommentsSection';
 import { logoutUser } from '../firebase';
@@ -19,7 +20,8 @@ import {
   Building2, 
   Scan,
   Sparkles,
-  ChevronRight
+  ChevronRight,
+  UserCheck
 } from 'lucide-react';
 
 interface WelcomeDashboardProps {
@@ -38,6 +40,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   const [loggingOut, setLoggingOut] = useState(false);
   const [showUserMgmtModal, setShowUserMgmtModal] = useState(false);
   const [showEntityPanel, setShowEntityPanel] = useState(false);
+  const [showWorkerRegModal, setShowWorkerRegModal] = useState(false);
   const [showFaceScanModal, setShowFaceScanModal] = useState(false);
 
   const handleLogout = async () => {
@@ -168,6 +171,30 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
             </button>
           )}
 
+          {/* Dedicated Worker Registration Portal Button */}
+          {canAccessEntityHub && (
+            <button
+              onClick={() => setShowWorkerRegModal(true)}
+              className="w-full p-4 rounded-2xl bg-gradient-to-r from-red-950 via-slate-900 to-amber-950 text-white border border-red-500/40 shadow-lg flex items-center justify-between transition-all cursor-pointer group hover:border-red-400/60"
+            >
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 rounded-xl bg-red-600/30 text-red-400 border border-red-500/40 shrink-0">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <div className="text-left">
+                  <h4 className="text-xs font-black text-white group-hover:text-red-400 transition-colors flex items-center space-x-1.5">
+                    <span>Worker Registration Portal</span>
+                    <span className="text-[9px] bg-red-600 text-white font-extrabold px-1.5 py-0.5 rounded-full uppercase">Biometric</span>
+                  </h4>
+                  <p className="text-[10px] text-red-200/80">
+                    Snap worker photo & instant face matching with auto entity sync
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-red-400 group-hover:text-white transition-colors" />
+            </button>
+          )}
+
           {/* Entity & Staff Hub Toggle Button */}
           {canAccessEntityHub && (
             <button
@@ -210,6 +237,15 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
           onClose={() => setShowUserMgmtModal(false)}
           currentUser={user}
           onUserRoleUpdated={onUserRefresh}
+        />
+      )}
+
+      {/* Worker Registration Modal */}
+      {showWorkerRegModal && (
+        <WorkerRegistrationModal
+          isOpen={showWorkerRegModal}
+          onClose={() => setShowWorkerRegModal(false)}
+          currentUser={user}
         />
       )}
 

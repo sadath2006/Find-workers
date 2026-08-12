@@ -42,11 +42,21 @@ export interface WorkerRecord {
   entityId: string;
   entityName: string;
   name: string;
+  photoURL?: string;
+  faceEmbedding?: number[]; // Vector embeddings for face matching
+  companyEntityId?: string;
+  companyEntityName?: string; // "Company Name" or "Not Assigned"
+  residentType?: 'Company' | 'Outliving' | 'Room';
+  roomEntityId?: string;
+  roomEntityName?: string; // "Room Name" or "Not Assigned"
   mobile: string;
-  skill: string;
+  aadhar?: string;
+  skill?: string;
   registeredByUid: string;
   registeredByName: string;
+  registeredByRole?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface CommentRecord {

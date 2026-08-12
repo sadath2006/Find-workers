@@ -408,15 +408,25 @@ export async function getStaffEntitiesForMobile(mobileNumber: string): Promise<E
 }
 
 // Worker Firestore Helpers
+function sanitizePayload<T extends Record<string, any>>(obj: T): T {
+  const cleaned: any = {};
+  Object.keys(obj).forEach(key => {
+    if (obj[key] !== undefined) {
+      cleaned[key] = obj[key];
+    }
+  });
+  return cleaned as T;
+}
+
 export async function addWorker(worker: Omit<WorkerRecord, 'id' | 'createdAt'>): Promise<WorkerRecord> {
   const path = 'workers';
   try {
     const newDocRef = doc(collection(db, 'workers'));
-    const payload: WorkerRecord = {
+    const payload: WorkerRecord = sanitizePayload({
       ...worker,
       id: newDocRef.id,
       createdAt: new Date().toISOString()
-    };
+    });
     await setDoc(newDocRef, payload);
     return payload;
   } catch (error) {
@@ -425,14 +435,30 @@ export async function addWorker(worker: Omit<WorkerRecord, 'id' | 'createdAt'>):
   }
 }
 
+export async function updateWorker(workerId: string, updates: Partial<WorkerRecord>): Promise<void> {
+  const path = `workers/${workerId}`;
+  try {
+    const docRef = doc(db, 'workers', workerId);
+    const cleanedUpdates = sanitizePayload({
+      ...updates,
+      updatedAt: new Date().toISOString()
+    });
+    await updateDoc(docRef, cleanedUpdates);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+    throw error;
+  }
+}
+
 export async function getWorkersForEntity(entityId: string): Promise<WorkerRecord[]> {
   const path = 'workers';
   try {
-    const q = query(collection(db, 'workers'), where('entityId', '==', entityId));
-    const snapshot = await getDocs(q);
-    const workers: WorkerRecord[] = [];
-    snapshot.forEach(d => workers.push(d.data() as WorkerRecord));
-    return workers;
+    const all = await getAllWorkers();
+    return all.filter(w => 
+      w.entityId === entityId || 
+      w.companyEntityId === entityId || 
+      w.roomEntityId === entityId
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
     return [];

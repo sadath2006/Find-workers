@@ -1,6 +1,8 @@
 {
   "name": "Find Worker",
   "description": "Mobile web application with Google Authentication and Firestore profile configuration.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "camera"
+  ],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
