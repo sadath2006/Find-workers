@@ -1,5 +1,5 @@
 import React from 'react';
-import logoPng from '../assets/logo.png';
+import { LOGO_PNG_DATA_URL } from '../assets/logoBase64';
 
 interface LogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
@@ -18,11 +18,8 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${sizeClasses[size]} ${className}`}>
       <img
-        src={logoPng}
+        src={LOGO_PNG_DATA_URL}
         alt="Find My Workers Logo"
-        onError={(e) => {
-          (e.target as HTMLImageElement).src = '/logo.png';
-        }}
         className={`w-full h-full object-contain ${
           animate ? 'animate-pulse' : ''
         }`}
@@ -30,6 +27,7 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
     </div>
   );
 };
+
 
 
 
