@@ -17,7 +17,7 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${sizeClasses[size]} ${className}`}>
       <img
-        src="/logo.png"
+        src="/logo.png?v=3"
         alt="Find Worker Biometric Shield Logo"
         referrerPolicy="no-referrer"
         className={`w-full h-full object-contain drop-shadow-md ${
