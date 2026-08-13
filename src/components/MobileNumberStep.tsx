@@ -165,7 +165,7 @@ export const MobileNumberStep: React.FC<MobileNumberStepProps> = ({ user, onComp
 
       {/* Clean Footer */}
       <div className="pb-4 pt-2 text-center text-xs text-slate-400 font-medium">
-        Find Worker Account Setup
+        Find My Workers Account Setup
       </div>
     </div>
   );

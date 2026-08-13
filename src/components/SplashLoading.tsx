@@ -6,7 +6,7 @@ interface SplashLoadingProps {
   message?: string;
 }
 
-export const SplashLoading: React.FC<SplashLoadingProps> = ({ message = 'Loading Find Worker...' }) => {
+export const SplashLoading: React.FC<SplashLoadingProps> = ({ message = 'Loading Find My Workers...' }) => {
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-gradient-to-b from-red-600 via-red-700 to-red-800 p-8 text-white select-none">
       <div className="flex-1 flex flex-col items-center justify-center space-y-6">
@@ -16,7 +16,7 @@ export const SplashLoading: React.FC<SplashLoadingProps> = ({ message = 'Loading
         {/* Title */}
         <div className="text-center space-y-1.5">
           <h1 className="text-3xl font-black tracking-tight text-white drop-shadow-md">
-            Find Worker
+            Find My Workers
           </h1>
           <p className="text-sm text-red-100 font-medium tracking-wide">
             Biometric Local Worker Network

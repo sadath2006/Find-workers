@@ -1,4 +1,9 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+const fs = require('fs');
+const path = require('path');
+const { Resvg } = require('@resvg/resvg-js');
+
+// High-fidelity SVG representing the exact user logo
+const svgContent = `<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <!-- Vibrant Red Badge Gradient -->
     <linearGradient id="badge-red" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -97,4 +102,31 @@
   <line x1="102" y1="447" x2="142" y2="447" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" />
   <text x="256" y="451" font-family="'Montserrat', -apple-system, system-ui, sans-serif" font-size="12" font-weight="800" fill="#FFFFFF" text-anchor="middle" letter-spacing="2.8">SCAN  •  IDENTIFY  •  TRACK</text>
   <line x1="370" y1="447" x2="410" y2="447" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" />
-</svg>
+</svg>`;
+
+// Save SVG to public
+fs.writeFileSync('public/logo.svg', svgContent);
+
+function renderPng(dimension, dest) {
+  const resvg = new Resvg(svgContent, {
+    fitTo: { mode: 'width', value: dimension }
+  });
+  const pngData = resvg.render();
+  const pngBuffer = pngData.asPng();
+  fs.writeFileSync(dest, pngBuffer);
+  console.log(`Generated ${dest} (${dimension}x${dimension} PNG)`);
+}
+
+// Generate all required PNG files
+renderPng(512, 'public/logo.png');
+renderPng(512, 'public/logo-512.png');
+renderPng(192, 'public/logo-192.png');
+renderPng(180, 'public/apple-touch-icon.png');
+renderPng(64, 'public/favicon.png');
+renderPng(512, 'src/assets/logo.png');
+
+// Create favicon.ico from favicon.png
+fs.copyFileSync('public/favicon.png', 'public/favicon.ico');
+console.log('Updated public/favicon.ico');
+
+console.log('All PNG logos generated and saved successfully.');

@@ -65,7 +65,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
         <div className="flex items-center space-x-3">
           <Logo size="sm" />
           <div>
-            <h1 className="text-base font-black text-slate-900 tracking-tight leading-none">Find Worker</h1>
+            <h1 className="text-base font-black text-slate-900 tracking-tight leading-none">Find My Workers</h1>
             <p className="text-[10px] text-red-600 font-bold uppercase tracking-wider mt-0.5">Role Portal</p>
           </div>
         </div>
@@ -261,7 +261,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
       {/* Footer */}
       <footer className="px-5 pt-2 text-center">
         <p className="text-[11px] text-slate-400 font-medium">
-          Find Worker Network • Role Portal
+          Find My Workers Network • Role Portal
         </p>
       </footer>
     </div>

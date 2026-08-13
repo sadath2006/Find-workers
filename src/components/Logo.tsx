@@ -20,6 +20,9 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
       <img
         src={logoPng}
         alt="Find My Workers Logo"
+        onError={(e) => {
+          (e.target as HTMLImageElement).src = '/logo.png';
+        }}
         className={`w-full h-full object-contain ${
           animate ? 'animate-pulse' : ''
         }`}

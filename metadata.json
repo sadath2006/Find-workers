@@ -1,6 +1,6 @@
 {
-  "name": "Find Worker",
-  "description": "Mobile web application with Google Authentication and Firestore profile configuration.",
+  "name": "Find My Workers",
+  "description": "Biometric face matching, worker identification, and workforce management system.",
   "requestFramePermissions": [
     "camera"
   ],

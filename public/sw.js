@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findworker-v3';
+const CACHE_NAME = 'findmyworkers-v5';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -13,8 +13,14 @@ const ASSETS_TO_CACHE = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE);
+    caches.open(CACHE_NAME).then(async (cache) => {
+      for (const asset of ASSETS_TO_CACHE) {
+        try {
+          await cache.add(asset);
+        } catch (err) {
+          console.warn('Failed to cache static asset:', asset, err);
+        }
+      }
     }).then(() => self.skipWaiting())
   );
 });
@@ -34,7 +40,6 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Simple network-first or cache-falling-back-to-network strategy
   if (
     !event.request.url.startsWith(self.location.origin) ||
     event.request.method !== 'GET' ||

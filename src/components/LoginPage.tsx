@@ -39,7 +39,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
         <div className="space-y-1">
           <h1 className="text-3xl font-extrabold tracking-tight text-white drop-shadow-sm">
-            Find Worker
+            Find My Workers
           </h1>
           <p className="text-xs font-medium text-red-100 tracking-wide">
             Verified Local Worker & Entity Portal
