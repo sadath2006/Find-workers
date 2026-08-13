@@ -1,7 +1,29 @@
 import express from "express";
 import path from "path";
+import { spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { FaissIndexFlatIP, FaissSearchResult } from "./src/utils/faissIndex";
+
+// Ensure Python FastAPI server is running on port 8000
+let pythonProcess: any = null;
+function ensurePythonFastApiServer() {
+  fetch("http://127.0.0.1:8000/health")
+    .then((res) => {
+      if (res.ok) console.log("✅ Python FastAPI SCRFD + ArcFace 512D microservice is online!");
+      else spawnPython();
+    })
+    .catch(() => {
+      spawnPython();
+    });
+}
+
+function spawnPython() {
+  console.log("🚀 Spawning Python FastAPI biometric server (fastapi_server.py)...");
+  pythonProcess = spawn("python3", ["fastapi_server.py"], { stdio: "inherit" });
+  pythonProcess.on("error", (err: any) => console.error("FastAPI spawn error:", err));
+}
+
+ensurePythonFastApiServer();
 
 // Initialize Server-Side FAISS IndexFlatIP (512 Dimensions for ArcFace Vectors)
 const faissIndex = new FaissIndexFlatIP(512, 50000);
@@ -14,15 +36,66 @@ async function startServer() {
   app.use(express.json({ limit: "35mb" }));
   app.use(express.urlencoded({ extended: true, limit: "35mb" }));
 
+  // Helper to forward request to Python FastAPI microservice
+  const forwardToFastApi = async (endpoint: string, reqBody: any, res: express.Response) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8000${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reqBody)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        return res.json(data);
+      } else {
+        const errText = await response.text();
+        return res.status(response.status).send(errText);
+      }
+    } catch (err: any) {
+      console.warn(`⚠️ FastAPI forward error on ${endpoint}:`, err?.message || err);
+      return null;
+    }
+  };
+
   // Health & FAISS Index Status Route
-  app.get("/api/health", (req, res) => {
-    res.json({ 
-      status: "ok", 
-      service: "Node/Express FAISS Vector Search Engine",
-      faissIndexSize: faissIndex.getSize(),
-      dimension: 512,
-      architecture: "ArcFace-512D + L2 Normalization + FAISS Vector DB"
-    });
+  app.get("/api/health", async (req, res) => {
+    try {
+      const pyRes = await fetch("http://127.0.0.1:8000/health");
+      const pyData = pyRes.ok ? await pyRes.json() : null;
+      return res.json({ 
+        status: "ok", 
+        service: "Node/Express + Python FastAPI SCRFD/ArcFace Biometric Engine",
+        faissIndexSize: faissIndex.getSize(),
+        dimension: 512,
+        pythonService: pyData
+      });
+    } catch {
+      return res.json({
+        status: "ok",
+        service: "Node/Express FAISS Vector Search Engine",
+        faissIndexSize: faissIndex.getSize(),
+        dimension: 512
+      });
+    }
+  });
+
+  // Proxy biometric endpoints to Python FastAPI microservice
+  app.post("/api/face/recognize", async (req, res) => {
+    const forwarded = await forwardToFastApi("/recognize", req.body, res);
+    if (forwarded) return;
+    return res.status(503).json({ error: "Python biometric microservice unavailable" });
+  });
+
+  app.post("/api/face/verify-duplicate", async (req, res) => {
+    const forwarded = await forwardToFastApi("/verify-duplicate", req.body, res);
+    if (forwarded) return;
+    return res.status(503).json({ error: "Python biometric microservice unavailable" });
+  });
+
+  app.post("/api/face/extract-vector", async (req, res) => {
+    const forwarded = await forwardToFastApi("/extract-vector", req.body, res);
+    if (forwarded) return;
+    return res.status(503).json({ error: "Python biometric microservice unavailable" });
   });
 
   // FAISS Status Endpoint
@@ -36,12 +109,19 @@ async function startServer() {
   });
 
   // FAISS Sync Endpoint: Syncs/Rebuilds FAISS Index with 512D ArcFace embeddings from Firestore
-  app.post("/api/face/faiss-sync", (req, res) => {
+  app.post("/api/face/faiss-sync", async (req, res) => {
     try {
       const { workers } = req.body;
       if (!Array.isArray(workers)) {
         return res.status(400).json({ error: "workers array required" });
       }
+
+      // Sync to Python FastAPI microservice
+      fetch("http://127.0.0.1:8000/sync-faiss", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workers })
+      }).catch((err) => console.warn("Failed to sync to Python FAISS:", err?.message || err));
 
       const records: Array<{ id: string; vector: number[] }> = [];
       workerMetadataStore.clear();

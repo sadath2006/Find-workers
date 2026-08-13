@@ -250,7 +250,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
         const allWorkers = workersCacheRef.current;
         
         if (allWorkers && allWorkers.length > 0) {
-          const matchResult = await verifyArcFaceDuplicateFaiss(vector, frameDataUrl, allWorkers, 0.65);
+          const matchResult = await verifyArcFaceDuplicateFaiss(vector, frameDataUrl, allWorkers, 0.72);
           if (matchResult.duplicateFound && matchResult.matchedWorkerId) {
             const matchedWorker = allWorkers.find(w => w.id === matchResult.matchedWorkerId);
             if (matchedWorker) {
@@ -329,8 +329,8 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
       const allWorkers = await getAllWorkers();
       console.log(`Fetched ${allWorkers.length} workers from Firestore for FAISS duplicate check`);
 
-      // Execute full mandatory face recognition pipeline (Threshold = 0.68)
-      const pipelineResult = await runFaceRecognitionPipeline(rawDataUrl, allWorkers, 0.68);
+      // Execute full mandatory face recognition pipeline (Threshold = 0.72)
+      const pipelineResult = await runFaceRecognitionPipeline(rawDataUrl, allWorkers, 0.72);
       setPipelineDebug(pipelineResult);
       setFaceVector(pipelineResult.embedding || []);
 

@@ -1,6 +1,8 @@
 {
   "short_name": "Find Worker",
   "name": "Find Worker Mobile App",
+  "description": "Biometric face matching and worker management system.",
+  "scope": "/",
   "icons": [
     {
       "src": "/logo-192.png",

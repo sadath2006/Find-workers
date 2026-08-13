@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
 import logoPng from '../assets/logo.png';
-import { LOGO_DATA_URL } from '../assets/logoDataUrl';
 
 interface LogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
@@ -9,8 +8,6 @@ interface LogoProps {
 }
 
 export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate = false }) => {
-  const [imgSrc, setImgSrc] = useState<string>(logoPng || LOGO_DATA_URL);
-
   const sizeClasses = {
     sm: 'w-10 h-10',
     md: 'w-16 h-16',
@@ -21,14 +18,9 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${sizeClasses[size]} ${className}`}>
       <img
-        src={imgSrc}
-        alt="Find Worker Biometric Shield Logo"
+        src={logoPng}
+        alt="Find Worker Shield Logo"
         referrerPolicy="no-referrer"
-        onError={() => {
-          if (imgSrc !== LOGO_DATA_URL) {
-            setImgSrc(LOGO_DATA_URL);
-          }
-        }}
         className={`w-full h-full object-contain drop-shadow-md ${
           animate ? 'animate-pulse' : ''
         }`}

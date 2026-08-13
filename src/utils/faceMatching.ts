@@ -156,6 +156,29 @@ function projectToArcFace512D(descriptor: Float32Array | number[], landmarks?: f
 export async function extractArcFaceEmbedding(imageDataUrl: string): Promise<number[] | null> {
   if (!imageDataUrl) return null;
 
+  // 1. Try Python FastAPI backend endpoint (/api/face/extract-vector)
+  try {
+    const res = await fetch('/api/face/extract-vector', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageDataUrl })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.faceDetected && Array.isArray(data.vector) && data.vector.length === 512) {
+        console.log(`✅ Python FastAPI ArcFace 512D Embedding extracted (Conf: ${(data.faceDetectionConfidence * 100).toFixed(1)}%).`);
+        return data.vector;
+      } else if (data.finalDecision === 'NO_FACE_DETECTED' || data.faceDetected === false) {
+        console.warn('⚠️ NO_FACE_DETECTED: Python SCRFD detector found no face in image.');
+        return null;
+      }
+    }
+  } catch (err) {
+    console.warn('⚠️ Backend vector extraction unreachable, falling back to client face-api:', err);
+  }
+
+  // 2. Client-side fallback
   try {
     const isLoaded = await loadFaceApiModels();
     if (!isLoaded) return null;
@@ -225,7 +248,7 @@ export interface FacePipelineDebugResponse {
 export async function runFaceRecognitionPipeline(
   imageDataUrl: string,
   workersList: any[] = [],
-  threshold: number = 0.68
+  threshold: number = 0.72
 ): Promise<FacePipelineDebugResponse> {
   const defaultDebug: FacePipelineDebugResponse = {
     faceDetected: false,
@@ -247,6 +270,42 @@ export async function runFaceRecognitionPipeline(
     };
   }
 
+  // 1. Try Python FastAPI biometric backend service (/api/face/recognize)
+  try {
+    const apiRes = await fetch('/api/face/recognize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageDataUrl, threshold, workers: workersList })
+    });
+
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      console.log('🤖 Python FastAPI Biometric Pipeline Result:', data);
+
+      const isFaceDetected = !!data.faceDetected;
+      const conf = data.faceDetectionConfidence || 0;
+      const sim = data.similarity || 0;
+      const simScore = Math.min(100, Math.max(0, Math.round(sim * 100)));
+      const finalDec = (data.finalDecision as 'NO_FACE_DETECTED' | 'NOT_DUPLICATE' | 'DUPLICATE') || (isFaceDetected ? 'NOT_DUPLICATE' : 'NO_FACE_DETECTED');
+
+      return {
+        faceDetected: isFaceDetected,
+        faceConfidence: conf,
+        faceQuality: conf,
+        similarityScore: simScore,
+        cosineSimilarity: sim,
+        matchedWorkerId: data.matchedWorkerId || null,
+        threshold: data.threshold || threshold,
+        finalDecision: finalDec,
+        embedding: Array.isArray(data.embedding) && data.embedding.length === 512 ? data.embedding : null,
+        debugLog: `[Python FastAPI] ${finalDec}: conf=${conf.toFixed(2)}, sim=${sim.toFixed(3)}, matchedId=${data.matchedWorkerId || 'None'}`
+      };
+    }
+  } catch (err) {
+    console.warn('⚠️ Python FastAPI backend unreachable, using client face-api fallback:', err);
+  }
+
+  // 2. Client-side fallback
   try {
     const isLoaded = await loadFaceApiModels();
     if (!isLoaded) {
@@ -440,8 +499,32 @@ export async function verifyArcFaceDuplicateFaiss(
   queryEmbedding: number[] | number[][] | null,
   candidateDataUrl?: string,
   workersList: any[] = [],
-  threshold: number = 0.65
+  threshold: number = 0.72
 ): Promise<FaissMatchResult> {
+  // If candidate image is provided, run Python FastAPI verify-duplicate endpoint
+  if (candidateDataUrl) {
+    try {
+      const res = await fetch('/api/face/verify-duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageDataUrl: candidateDataUrl, threshold, workers: workersList })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const isDup = !!data.duplicateFound || data.finalDecision === 'DUPLICATE';
+        const sim = data.similarity || 0;
+        return {
+          duplicateFound: isDup,
+          matchedWorkerId: isDup ? (data.matchedWorkerId || undefined) : undefined,
+          similarityScore: Math.min(100, Math.max(0, Math.round(sim * 100))),
+          cosineSimilarity: sim,
+          noFaceDetected: data.finalDecision === 'NO_FACE_DETECTED' || data.faceDetected === false
+        };
+      }
+    } catch (err) {
+      console.warn('⚠️ Python verify-duplicate backend unreachable, falling back to vector query:', err);
+    }
+  }
   let queryEmbeddings: number[][] = [];
 
   if (Array.isArray(queryEmbedding)) {
@@ -526,7 +609,7 @@ export const verifyDuplicateFaceBatch = async (
   candidateVector: number[] | null,
   workersList: any[]
 ) => {
-  const result = await verifyArcFaceDuplicateFaiss(candidateVector, candidateDataUrl, workersList, 0.65);
+  const result = await verifyArcFaceDuplicateFaiss(candidateVector, candidateDataUrl, workersList, 0.72);
   return {
     duplicateFound: result.duplicateFound,
     matchedWorkerId: result.matchedWorkerId,
