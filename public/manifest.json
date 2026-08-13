@@ -2,36 +2,31 @@
   "short_name": "Find Worker",
   "name": "Find Worker Mobile App",
   "description": "Biometric face matching and worker management system.",
+  "id": "/",
+  "start_url": "/",
   "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020617",
+  "theme_color": "#020617",
   "icons": [
     {
       "src": "/logo-192.png",
       "type": "image/png",
       "sizes": "192x192",
-      "purpose": "any"
-    },
-    {
-      "src": "/logo-192.png",
-      "type": "image/png",
-      "sizes": "192x192",
-      "purpose": "maskable"
+      "purpose": "any maskable"
     },
     {
       "src": "/logo-512.png",
       "type": "image/png",
       "sizes": "512x512",
-      "purpose": "any"
+      "purpose": "any maskable"
     },
     {
-      "src": "/logo-512.png",
-      "type": "image/png",
-      "sizes": "512x512",
-      "purpose": "maskable"
+      "src": "/logo.svg",
+      "type": "image/svg+xml",
+      "sizes": "600x600 512x512 192x192 64x64 32x32",
+      "purpose": "any"
     }
-  ],
-  "start_url": "/",
-  "background_color": "#020617",
-  "theme_color": "#020617",
-  "display": "standalone",
-  "orientation": "portrait"
+  ]
 }
