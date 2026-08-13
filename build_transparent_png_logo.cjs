@@ -1,4 +1,8 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+const fs = require('fs');
+const { Resvg } = require('@resvg/resvg-js');
+
+// Transparent background SVG template matching the red badge logo
+const svgContent = `<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <!-- Vibrant Red Badge Gradient -->
     <linearGradient id="red-badge-grad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -73,4 +77,31 @@
   <line x1="105" y1="438" x2="145" y2="438" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" />
   <text x="256" y="442" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Montserrat', 'Segoe UI', Arial, sans-serif" font-size="12" font-weight="800" fill="#FFFFFF" text-anchor="middle" letter-spacing="2.5">SCAN  •  IDENTIFY  •  TRACK</text>
   <line x1="367" y1="438" x2="407" y2="438" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" />
-</svg>
+</svg>`;
+
+// Save public/logo.svg for fallback vector usage
+fs.writeFileSync('public/logo.svg', svgContent);
+
+function convertSvgToPng(width, outputPath) {
+  const resvg = new Resvg(svgContent, {
+    fitTo: { mode: 'width', value: width }
+  });
+  const pngData = resvg.render();
+  const pngBuffer = pngData.asPng();
+  fs.writeFileSync(outputPath, pngBuffer);
+  console.log(`Successfully generated ${outputPath} (${width}x${width} PNG with transparent background)`);
+}
+
+// Generate all transparent PNG icon sizes required by the PWA and browser
+convertSvgToPng(512, 'public/logo.png');
+convertSvgToPng(512, 'public/logo-512.png');
+convertSvgToPng(192, 'public/logo-192.png');
+convertSvgToPng(180, 'public/apple-touch-icon.png');
+convertSvgToPng(64, 'public/favicon.png');
+convertSvgToPng(512, 'src/assets/logo.png');
+
+// Copy favicon.png to favicon.ico for maximum browser compatibility
+fs.copyFileSync('public/favicon.png', 'public/favicon.ico');
+console.log('Successfully updated public/favicon.ico');
+
+console.log('All PNG logo files updated successfully!');

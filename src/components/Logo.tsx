@@ -18,12 +18,9 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${sizeClasses[size]} ${className}`}>
       <img
-        src="/logo.png"
-        alt="Find Worker Logo"
-        onError={(e) => {
-          (e.target as HTMLImageElement).src = logoPng;
-        }}
-        className={`w-full h-full object-contain drop-shadow-md ${
+        src={logoPng}
+        alt="Find My Workers Logo"
+        className={`w-full h-full object-contain ${
           animate ? 'animate-pulse' : ''
         }`}
       />
