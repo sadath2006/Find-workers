@@ -155,6 +155,23 @@ async function startServer() {
     }
   });
 
+  // Save PNG Logo Endpoint
+  app.post("/api/save-logo-png", (req, res) => {
+    try {
+      const { pngDataUrl } = req.body;
+      if (pngDataUrl && typeof pngDataUrl === "string" && pngDataUrl.startsWith("data:image/png;base64,")) {
+        const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, "");
+        const fs = require("fs");
+        const logoPath = path.join(process.cwd(), "public", "logo.png");
+        fs.writeFileSync(logoPath, base64Data, "base64");
+        return res.json({ success: true, logoPath });
+      }
+      return res.status(400).json({ error: "Invalid PNG data URL" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || "Failed to save logo PNG" });
+    }
+  });
+
   // Enroll Worker Endpoint (Adds new 512D ArcFace embeddings directly into FAISS index)
   app.post("/api/face/enroll-worker", (req, res) => {
     try {
