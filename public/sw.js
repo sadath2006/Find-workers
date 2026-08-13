@@ -1,8 +1,11 @@
-const CACHE_NAME = 'findworker-v2';
+const CACHE_NAME = 'findworker-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/favicon.ico',
+  '/favicon.png',
+  '/apple-touch-icon.png',
   '/logo.png',
   '/logo-192.png',
   '/logo-512.png'

@@ -1,5 +1,4 @@
 import React from 'react';
-import logoSvg from '/logo.svg?url';
 import logoPng from '../assets/logo.png';
 
 interface LogoProps {
@@ -19,8 +18,8 @@ export const Logo: React.FC<LogoProps> = ({ size = 'md', className = '', animate
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${sizeClasses[size]} ${className}`}>
       <img
-        src="/logo.svg"
-        alt="Find Worker Shield Logo"
+        src="/logo.png"
+        alt="Find Worker Logo"
         onError={(e) => {
           (e.target as HTMLImageElement).src = logoPng;
         }}
