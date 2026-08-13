@@ -9,6 +9,7 @@ import {
   addStaffToEntity, 
   removeStaffFromEntity, 
   addWorker, 
+  deleteWorker,
   getWorkersForEntity,
   getStaffEntitiesForMobile
 } from '../firebase';
@@ -247,6 +248,31 @@ export const EntityManagementPanel: React.FC<EntityManagementPanelProps> = ({ cu
       await loadWorkers(selectedEntity.id);
     } catch (err: any) {
       setMsg({ type: 'error', text: 'Failed to register worker.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Worker deletion confirmation modal state
+  const [workerToDelete, setWorkerToDelete] = useState<{ id: string; name: string } | null>(null);
+
+  const handleDeleteWorker = (workerId: string, name: string) => {
+    setWorkerToDelete({ id: workerId, name });
+  };
+
+  const confirmDeleteWorker = async () => {
+    if (!workerToDelete) return;
+    setActionLoading(true);
+    setMsg(null);
+    try {
+      await deleteWorker(workerToDelete.id, currentUser);
+      setMsg({ type: 'success', text: `Worker "${workerToDelete.name}" deleted successfully.` });
+      setWorkerToDelete(null);
+      if (selectedEntity) {
+        await loadWorkers(selectedEntity.id);
+      }
+    } catch (err: any) {
+      setMsg({ type: 'error', text: err.message || 'Failed to delete worker.' });
     } finally {
       setActionLoading(false);
     }
@@ -558,52 +584,114 @@ export const EntityManagementPanel: React.FC<EntityManagementPanelProps> = ({ cu
             {/* Worker List */}
             {workers.length > 0 ? (
               <div className="space-y-2">
-                {workers.map(w => (
-                  <div key={w.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800/90 text-xs flex items-center justify-between space-x-3">
-                    <div className="flex items-center space-x-3 min-w-0 flex-1">
-                      {w.photoURL ? (
-                        <img
-                          src={w.photoURL}
-                          alt={w.name}
-                          className="w-11 h-11 rounded-xl object-cover border border-slate-700 shrink-0"
-                        />
-                      ) : (
-                        <div className="w-11 h-11 rounded-xl bg-amber-500/20 text-amber-400 font-black flex items-center justify-center shrink-0 border border-amber-500/30 text-base">
-                          {w.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <div className="flex items-center space-x-2">
-                          <h6 className="font-extrabold text-white text-xs truncate">{w.name}</h6>
-                          {w.skill && (
-                            <span className="text-[9px] text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-800/50 shrink-0 font-semibold">
-                              {w.skill}
-                            </span>
+                {workers.map(w => {
+                  const isFounderOrAdmin = ['Founder', 'Super Admin'].includes(currentUser.role) || 
+                    currentUser.email?.toLowerCase() === 'sadath2006@gmail.com';
+                  const isRegistrar = w.registeredByUid === currentUser.uid;
+                  const isEntityOwner = selectedEntity.ownerUid === currentUser.uid;
+                  const canDelete = isFounderOrAdmin || isRegistrar || isEntityOwner;
+
+                  return (
+                    <div key={w.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800/90 text-xs flex items-center justify-between space-x-3">
+                      <div className="flex items-center space-x-3 min-w-0 flex-1">
+                        {w.photoURL ? (
+                          <img
+                            src={w.photoURL}
+                            alt={w.name}
+                            className="w-11 h-11 rounded-xl object-cover border border-slate-700 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-11 h-11 rounded-xl bg-amber-500/20 text-amber-400 font-black flex items-center justify-center shrink-0 border border-amber-500/30 text-base">
+                            {w.name.charAt(0)}
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex items-center space-x-2">
+                            <h6 className="font-extrabold text-white text-xs truncate">{w.name}</h6>
+                            {w.skill && (
+                              <span className="text-[9px] text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-800/50 shrink-0 font-semibold">
+                                {w.skill}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-300">
+                            {w.companyEntityName && (
+                              <span className="text-indigo-300 font-medium">🏢 {w.companyEntityName}</span>
+                            )}
+                            {w.roomEntityName && (
+                              <span className="text-emerald-300 font-medium">🏠 {w.roomEntityName}</span>
+                            )}
+                          </div>
+                          {w.mobile && (
+                            <p className="text-[10px] text-slate-400 font-mono">📱 {w.mobile}</p>
                           )}
                         </div>
-                        <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-300">
-                          {w.companyEntityName && (
-                            <span className="text-indigo-300 font-medium">🏢 {w.companyEntityName}</span>
-                          )}
-                          {w.roomEntityName && (
-                            <span className="text-emerald-300 font-medium">🏠 {w.roomEntityName}</span>
-                          )}
-                        </div>
-                        {w.mobile && (
-                          <p className="text-[10px] text-slate-400 font-mono">📱 {w.mobile}</p>
+                      </div>
+
+                      <div className="text-right shrink-0 flex items-center space-x-2">
+                        <span className="text-[9px] text-slate-500 font-mono block">By {w.registeredByName}</span>
+                        {canDelete && (
+                          <button
+                            onClick={() => handleDeleteWorker(w.id, w.name)}
+                            disabled={actionLoading}
+                            className="p-1.5 text-rose-400 hover:text-white hover:bg-rose-600/30 rounded-lg transition-colors cursor-pointer"
+                            title="Delete Worker"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
                     </div>
-
-                    <div className="text-right shrink-0">
-                      <span className="text-[9px] text-slate-500 font-mono block">By {w.registeredByName}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-[11px] text-slate-500 italic">No workers registered under this entity yet.</p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* In-App Worker Delete Confirmation Modal */}
+      {workerToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-800 text-white rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-2xl relative overflow-hidden text-center border-t-4 border-t-rose-500">
+            <div className="w-14 h-14 rounded-2xl bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center justify-center mx-auto shadow-inner">
+              <Trash2 className="w-7 h-7" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-extrabold text-white">Delete Worker Registration?</h3>
+              <p className="text-xs text-slate-400 font-medium leading-relaxed">
+                Are you sure you want to permanently delete <span className="text-white font-bold">{workerToDelete.name}</span>? This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setWorkerToDelete(null)}
+                disabled={actionLoading}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteWorker}
+                disabled={actionLoading}
+                className="flex-1 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black rounded-xl text-xs transition-all shadow-lg flex items-center justify-center space-x-1.5 cursor-pointer"
+              >
+                {actionLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin mx-auto text-white" />
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Yes, Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

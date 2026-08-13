@@ -29,6 +29,7 @@ import {
   CommentRecord, 
   FOUNDER_EMAIL 
 } from './types';
+import { compressImage } from './utils/imageCompressor';
 
 const app = initializeApp(firebaseConfig);
 
@@ -422,8 +423,11 @@ export async function addWorker(worker: Omit<WorkerRecord, 'id' | 'createdAt'>):
   const path = 'workers';
   try {
     const newDocRef = doc(collection(db, 'workers'));
+
+    // As requested: Do NOT store photo in database. Store empty photoURL; only faceEmbedding vector is saved to Firestore.
     const payload: WorkerRecord = sanitizePayload({
       ...worker,
+      photoURL: '',
       id: newDocRef.id,
       createdAt: new Date().toISOString()
     });
@@ -439,8 +443,11 @@ export async function updateWorker(workerId: string, updates: Partial<WorkerReco
   const path = `workers/${workerId}`;
   try {
     const docRef = doc(db, 'workers', workerId);
+
+    // As requested: Do NOT store photo in database
     const cleanedUpdates = sanitizePayload({
       ...updates,
+      photoURL: '',
       updatedAt: new Date().toISOString()
     });
     await updateDoc(docRef, cleanedUpdates);
@@ -475,6 +482,42 @@ export async function getAllWorkers(): Promise<WorkerRecord[]> {
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
+  }
+}
+
+export async function deleteWorker(workerId: string, currentUser: UserProfile): Promise<void> {
+  const path = `workers/${workerId}`;
+  try {
+    const workerRef = doc(db, 'workers', workerId);
+    const workerSnap = await getDoc(workerRef);
+    if (!workerSnap.exists()) return;
+
+    const worker = workerSnap.data() as WorkerRecord;
+
+    const isFounderOrAdmin = ['Founder', 'Super Admin'].includes(currentUser.role) || 
+      currentUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
+    const isRegistrar = worker.registeredByUid === currentUser.uid;
+
+    // Check entity owner status
+    let isOwnerOfEntity = false;
+    const allEnts = await getAllEntities();
+    const relatedEntityIds = [worker.entityId, worker.companyEntityId, worker.roomEntityId].filter(Boolean);
+
+    for (const ent of allEnts) {
+      if (relatedEntityIds.includes(ent.id) && ent.ownerUid === currentUser.uid) {
+        isOwnerOfEntity = true;
+        break;
+      }
+    }
+
+    if (!isFounderOrAdmin && !isRegistrar && !isOwnerOfEntity) {
+      throw new Error('Unauthorized to delete this worker registration.');
+    }
+
+    await deleteDoc(workerRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+    throw error;
   }
 }
 

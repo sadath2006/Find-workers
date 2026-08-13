@@ -160,21 +160,24 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
     }
   };
 
-  const handleDeleteUser = async (targetUser: UserProfile) => {
+  const [userToDelete, setUserToDelete] = useState<UserProfile | null>(null);
+
+  const handleDeleteUser = (targetUser: UserProfile) => {
     if (targetUser.role === 'Founder') {
       setErrorMsg('Founder account cannot be deleted!');
       return;
     }
+    setUserToDelete(targetUser);
+  };
 
-    if (!window.confirm(`Are you sure you want to delete user "${targetUser.displayName}" (${targetUser.email})?`)) {
-      return;
-    }
-
-    setUpdatingUid(targetUser.uid);
+  const confirmDeleteUser = async () => {
+    if (!userToDelete) return;
+    setUpdatingUid(userToDelete.uid);
     setErrorMsg(null);
     try {
-      await deleteUserDocument(targetUser.uid, currentUser.role);
-      setUsers(prev => prev.filter(u => u.uid !== targetUser.uid));
+      await deleteUserDocument(userToDelete.uid, currentUser.role);
+      setUsers(prev => prev.filter(u => u.uid !== userToDelete.uid));
+      setUserToDelete(null);
     } catch (err: any) {
       setErrorMsg('Failed to delete user.');
     } finally {
@@ -408,6 +411,50 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
           allEntities={entities}
           allWorkers={workers}
         />
+      )}
+
+      {/* In-App Delete User Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-800 text-white rounded-3xl max-w-sm w-full p-6 space-y-4 shadow-2xl relative overflow-hidden text-center border-t-4 border-t-rose-500">
+            <div className="w-14 h-14 rounded-2xl bg-rose-500/10 text-rose-500 border border-rose-500/20 flex items-center justify-center mx-auto shadow-inner">
+              <Trash2 className="w-7 h-7" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-extrabold text-white">Delete User Account?</h3>
+              <p className="text-xs text-slate-400 font-medium leading-relaxed">
+                Are you sure you want to delete <span className="text-white font-bold">{userToDelete.displayName}</span> ({userToDelete.email})?
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setUserToDelete(null)}
+                disabled={!!updatingUid}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteUser}
+                disabled={!!updatingUid}
+                className="flex-1 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black rounded-xl text-xs transition-all shadow-lg flex items-center justify-center space-x-1.5 cursor-pointer"
+              >
+                {updatingUid ? (
+                  <Loader2 className="w-4 h-4 animate-spin mx-auto text-white" />
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Yes, Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -44,6 +44,7 @@ export interface WorkerRecord {
   name: string;
   photoURL?: string;
   faceEmbedding?: number[]; // Vector embeddings for face matching
+  faceEmbeddingVersion?: string; // Model version tag e.g. 'facenet_v2'
   companyEntityId?: string;
   companyEntityName?: string; // "Company Name" or "Not Assigned"
   residentType?: 'Company' | 'Outliving' | 'Room';

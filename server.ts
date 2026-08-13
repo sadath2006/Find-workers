@@ -1,46 +1,188 @@
 import express from "express";
 import path from "path";
-import { spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
+import { FaissIndexFlatIP, FaissSearchResult } from "./src/utils/faissIndex";
+
+// Initialize Server-Side FAISS IndexFlatIP (512 Dimensions for ArcFace Vectors)
+const faissIndex = new FaissIndexFlatIP(512, 50000);
+const workerMetadataStore = new Map<string, { id: string; name: string; entityName?: string }>();
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: "25mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+  app.use(express.json({ limit: "35mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "35mb" }));
 
-  // Spawn Python FastAPI Microservice on port 8000
-  console.log("🚀 Launching Python FastAPI Biometric Face Service on port 8000...");
-  const pythonProcess = spawn("python3", ["-m", "uvicorn", "fastapi_server:app", "--host", "127.0.0.1", "--port", "8000"], {
-    stdio: "inherit"
+  // Health & FAISS Index Status Route
+  app.get("/api/health", (req, res) => {
+    res.json({ 
+      status: "ok", 
+      service: "Node/Express FAISS Vector Search Engine",
+      faissIndexSize: faissIndex.getSize(),
+      dimension: 512,
+      architecture: "ArcFace-512D + L2 Normalization + FAISS Vector DB"
+    });
   });
 
-  pythonProcess.on("error", (err) => {
-    console.error("⚠️ Failed to start Python FastAPI process:", err);
+  // FAISS Status Endpoint
+  app.get("/api/face/faiss-status", (req, res) => {
+    res.json({
+      indexedVectors: faissIndex.getSize(),
+      indexedWorkers: workerMetadataStore.size,
+      dimension: 512,
+      indexType: "FAISS IndexFlatIP (Cosine Similarity)"
+    });
   });
 
-  // Express proxy to Python FastAPI Microservice
-  app.all("/api/python/*", async (req, res) => {
-    const targetPath = req.params[0] || "";
-    const fastapiUrl = `http://127.0.0.1:8000/${targetPath}`;
+  // FAISS Sync Endpoint: Syncs/Rebuilds FAISS Index with 512D ArcFace embeddings from Firestore
+  app.post("/api/face/faiss-sync", (req, res) => {
     try {
-      const response = await fetch(fastapiUrl, {
-        method: req.method,
-        headers: { "Content-Type": "application/json" },
-        body: ["GET", "HEAD"].includes(req.method) ? undefined : JSON.stringify(req.body)
+      const { workers } = req.body;
+      if (!Array.isArray(workers)) {
+        return res.status(400).json({ error: "workers array required" });
+      }
+
+      const records: Array<{ id: string; vector: number[] }> = [];
+      workerMetadataStore.clear();
+
+      for (const w of workers) {
+        if (!w.id) continue;
+        workerMetadataStore.set(w.id, { id: w.id, name: w.name, entityName: w.entityName });
+
+        // Multi-photo ArcFace embeddings
+        if (Array.isArray(w.arcfaceEmbeddings) && w.arcfaceEmbeddings.length > 0) {
+          for (const vec of w.arcfaceEmbeddings) {
+            if (Array.isArray(vec) && vec.length === 512) {
+              records.push({ id: w.id, vector: vec });
+            }
+          }
+        } 
+        // Single ArcFace embedding
+        else if (Array.isArray(w.faceEmbedding) && w.faceEmbedding.length === 512) {
+          records.push({ id: w.id, vector: w.faceEmbedding });
+        }
+      }
+
+      faissIndex.buildIndex(records);
+      console.log(`✅ FAISS Index rebuilt successfully with ${records.length} ArcFace 512D vectors for ${workerMetadataStore.size} workers.`);
+
+      return res.json({
+        success: true,
+        indexedVectors: faissIndex.getSize(),
+        totalWorkers: workerMetadataStore.size
       });
-      const data = await response.json();
-      res.status(response.status).json(data);
     } catch (err: any) {
-      console.error("Proxy error to FastAPI:", err);
-      res.status(502).json({ error: "Python FastAPI Service Unavailable", details: err?.message });
+      console.error("Error syncing FAISS index:", err);
+      return res.status(500).json({ error: err.message || "Failed to sync FAISS index" });
     }
   });
 
-  // Health route
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", service: "Node/Express + Python FastAPI Microservice" });
+  // FAISS Vector Similarity Search & Duplicate Detection Endpoint
+  app.post("/api/face/faiss-search", (req, res) => {
+    try {
+      const { embedding, embeddings, threshold = 0.68, topK = 1 } = req.body;
+
+      const queryVectors: number[][] = [];
+      if (Array.isArray(embedding) && embedding.length === 512) {
+        queryVectors.push(embedding);
+      }
+      if (Array.isArray(embeddings)) {
+        for (const vec of embeddings) {
+          if (Array.isArray(vec) && vec.length === 512) {
+            queryVectors.push(vec);
+          }
+        }
+      }
+
+      if (queryVectors.length === 0) {
+        return res.status(400).json({ error: "Valid 512D ArcFace query embedding required" });
+      }
+
+      if (faissIndex.getSize() === 0) {
+        return res.json({
+          duplicateFound: false,
+          finalDecision: "NOT_DUPLICATE",
+          similarityScore: 0,
+          cosineSimilarity: 0,
+          matchedWorkerId: null,
+          matchedWorker: null,
+          threshold,
+          message: "FAISS index is empty"
+        });
+      }
+
+      let bestMatch: FaissSearchResult | null = null;
+
+      for (const qVec of queryVectors) {
+        const results = faissIndex.search(qVec, topK);
+        if (results.length > 0) {
+          if (!bestMatch || results[0].similarity > bestMatch.similarity) {
+            bestMatch = results[0];
+          }
+        }
+      }
+
+      if (!bestMatch) {
+        return res.json({
+          duplicateFound: false,
+          finalDecision: "NOT_DUPLICATE",
+          similarityScore: 0,
+          cosineSimilarity: 0,
+          matchedWorkerId: null,
+          threshold
+        });
+      }
+
+      const similarity = bestMatch.similarity; // Cosine similarity (-1 to 1)
+      const isDuplicate = similarity >= threshold;
+      const similarityPercentage = Math.min(100, Math.max(0, Math.round(similarity * 100)));
+      const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
+
+      return res.json({
+        duplicateFound: isDuplicate,
+        finalDecision: isDuplicate ? "DUPLICATE" : "NOT_DUPLICATE",
+        matchedWorkerId: isDuplicate ? bestMatch.id : null,
+        matchedWorker: isDuplicate ? workerMeta : null,
+        similarityScore: similarityPercentage,
+        cosineSimilarity: similarity,
+        thresholdUsed: threshold,
+        topMatchId: bestMatch.id
+      });
+    } catch (err: any) {
+      console.error("Error during FAISS search:", err);
+      return res.status(500).json({ error: err.message || "FAISS search failed" });
+    }
+  });
+
+  // Enroll Worker Endpoint (Adds new 512D ArcFace embeddings directly into FAISS index)
+  app.post("/api/face/enroll-worker", (req, res) => {
+    try {
+      const { workerId, name, entityName, embeddings } = req.body;
+      if (!workerId || !Array.isArray(embeddings)) {
+        return res.status(400).json({ error: "workerId and embeddings array required" });
+      }
+
+      workerMetadataStore.set(workerId, { id: workerId, name, entityName });
+
+      let addedCount = 0;
+      for (const vec of embeddings) {
+        if (Array.isArray(vec) && vec.length === 512) {
+          faissIndex.add(workerId, vec);
+          addedCount++;
+        }
+      }
+
+      return res.json({
+        success: true,
+        workerId,
+        addedVectors: addedCount,
+        totalFaissSize: faissIndex.getSize()
+      });
+    } catch (err: any) {
+      console.error("Error enrolling worker in FAISS:", err);
+      return res.status(500).json({ error: err.message || "Enrollment failed" });
+    }
   });
 
   // Vite middleware for development vs static serve for production
