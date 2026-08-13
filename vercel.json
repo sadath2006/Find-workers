@@ -17,7 +17,7 @@
       ]
     },
     {
-      "source": "/(.*\\.(png|svg|ico|json|jpg|jpeg|bin))",
+      "source": "/(.*\\.(?:png|jpg|jpeg|gif|svg|ico|webp|json|bin|woff|woff2|ttf|eot))",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
       ]
@@ -25,7 +25,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!.*\\.).*)",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ]
