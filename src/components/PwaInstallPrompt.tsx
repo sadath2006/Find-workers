@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { Download, X } from 'lucide-react';
-import { LOGO_PNG_DATA_URL } from '../assets/logoBase64';
 
 export const PwaInstallPrompt: React.FC = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -35,7 +34,7 @@ export const PwaInstallPrompt: React.FC = () => {
     <div className="fixed bottom-4 inset-x-4 max-w-md mx-auto z-50 p-4 bg-slate-900/95 text-white border border-red-500/40 rounded-2xl shadow-2xl backdrop-blur-md flex items-center justify-between animate-slideUp">
       <div className="flex items-center space-x-3">
         <div className="w-10 h-10 shrink-0 bg-white/10 rounded-xl p-1 border border-white/20 flex items-center justify-center overflow-hidden">
-          <img src={LOGO_PNG_DATA_URL} alt="Logo" className="w-full h-full object-contain" />
+          <img src="/Logo.png" onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="Logo" className="w-full h-full object-contain" />
         </div>
         <div>
           <h4 className="text-xs font-bold text-white">Install Find My Workers</h4>
