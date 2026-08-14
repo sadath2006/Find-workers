@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v14-robustauth';
+const CACHE_NAME = 'findmyworkers-v15-pwaauth';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

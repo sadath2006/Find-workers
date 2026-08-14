@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Logo } from './Logo';
-import { loginWithGoogle, loginWithGoogleRedirect } from '../firebase';
+import { auth, loginWithGoogle, loginWithGoogleRedirect } from '../firebase';
 import { ShieldCheck, Users, MapPin, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
 
 interface LoginPageProps {
@@ -16,11 +16,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
     setError(null);
     try {
       const user = await loginWithGoogle();
-      if (user) {
+      if (user || auth.currentUser) {
         onSuccess();
+        return;
       }
     } catch (err: any) {
       console.warn('Google Sign-In caught:', err?.code, err?.message);
+
+      // If user is actually authenticated despite transient error, proceed to app!
+      if (auth.currentUser) {
+        onSuccess();
+        return;
+      }
+
       setLoading(false);
 
       if (err?.code === 'auth/popup-closed-by-user') {

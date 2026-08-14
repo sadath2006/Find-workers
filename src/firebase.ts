@@ -75,8 +75,8 @@ interface FirestoreErrorInfo {
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const rawMsg = error instanceof Error ? error.message : String(error);
   if (isTransientFirestoreError(error)) {
-    console.warn(`Transient Firestore issue during ${operationType} on ${path}:`, rawMsg);
-    throw new Error('Connection temporarily interrupted. Please check your network and try again.');
+    console.warn(`Transient Firestore connection issue during ${operationType} on ${path}:`, rawMsg);
+    throw new Error('Database connection re-establishing. Please try again in a moment.');
   }
   const errInfo: FirestoreErrorInfo = {
     error: rawMsg,
@@ -98,6 +98,7 @@ function isTransientFirestoreError(error: any): boolean {
   if (!error) return false;
   const msg = (error?.message || String(error)).toLowerCase();
   const code = (error?.code || '').toLowerCase();
+  const name = (error?.name || '').toLowerCase();
   return (
     msg.includes('closing') ||
     msg.includes('closed') ||
@@ -109,6 +110,9 @@ function isTransientFirestoreError(error: any): boolean {
     msg.includes('aborted') ||
     msg.includes('failed to get document') ||
     msg.includes('connection') ||
+    msg.includes('indexeddb') ||
+    msg.includes('internal') ||
+    name.includes('domexception') ||
     code.includes('unavailable') ||
     code.includes('deadline-exceeded')
   );
@@ -117,7 +121,7 @@ function isTransientFirestoreError(error: any): boolean {
 /**
  * Executes a Firestore asynchronous operation with automatic retries on transient connection or closing errors.
  */
-async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 4, delayMs = 300): Promise<T> {
+async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 5, delayMs = 350): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -191,10 +195,20 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   const path = `users/${uid}`;
   const localCacheKey = `fmp_user_profile_${uid}`;
 
+  // 1. Check local storage cache first for instant loading
+  let cachedProfile: UserProfile | null = null;
+  try {
+    const cached = localStorage.getItem(localCacheKey);
+    if (cached) {
+      cachedProfile = JSON.parse(cached) as UserProfile;
+    }
+  } catch (_) {}
+
   try {
     const userDocRef = doc(db, 'users', uid);
-    const docSnap = await withFirestoreRetry(() => getDoc(userDocRef));
-    if (docSnap.exists()) {
+    const docSnap = await withFirestoreRetry(() => getDoc(userDocRef)).catch(() => null);
+
+    if (docSnap && docSnap.exists()) {
       const data = docSnap.data() as UserProfile;
       let needsUpdate = false;
       const updates: Partial<UserProfile> = {};
@@ -233,21 +247,31 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
     }
   } catch (error) {
     console.warn('getUserProfile fetch notice (falling back to cache):', error);
-    try {
-      const cached = localStorage.getItem(localCacheKey);
-      if (cached) {
-        return JSON.parse(cached) as UserProfile;
-      }
-    } catch (_) {}
-    return null;
   }
 
-  try {
-    const cached = localStorage.getItem(localCacheKey);
-    if (cached) {
-      return JSON.parse(cached) as UserProfile;
-    }
-  } catch (_) {}
+  // 2. Return cached profile if available
+  if (cachedProfile) {
+    return cachedProfile;
+  }
+
+  // 3. Fallback for authenticated user if document in Firestore is not created yet or connection is resetting
+  if (auth.currentUser && auth.currentUser.uid === uid) {
+    const isFounder = auth.currentUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
+    const fallbackProfile: UserProfile = {
+      uid,
+      displayName: auth.currentUser.displayName || 'User',
+      email: auth.currentUser.email || '',
+      photoURL: auth.currentUser.photoURL || '',
+      mobileNumber: '',
+      role: isFounder ? 'Founder' : 'Public Member',
+      isApproved: isFounder
+    };
+    try {
+      localStorage.setItem(localCacheKey, JSON.stringify(fallbackProfile));
+    } catch (_) {}
+    return fallbackProfile;
+  }
+
   return null;
 }
 
