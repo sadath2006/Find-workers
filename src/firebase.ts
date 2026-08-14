@@ -42,7 +42,6 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 // Initialize Firestore strictly with in-memory caching to eliminate any IndexedDB connection closing / lock / multi-tab issues
 export const db = initializeFirestore(
@@ -132,23 +131,9 @@ async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 3, delay
 }
 
 // Auth Helpers
-export async function loginWithGoogle(): Promise<User | void> {
-  try {
-    const result = await signInWithPopup(auth, googleProvider);
-    return result.user;
-  } catch (err: any) {
-    const code = err?.code || '';
-    const msg = (err?.message || '').toLowerCase();
-    
-    if (code === 'auth/unauthorized-domain') {
-      throw err;
-    }
-    
-    // Auto-fallback to direct redirect sign-in for any popup blocker, closing DB, or mobile browser environment
-    console.info('Switching to redirect sign-in due to popup/environment behavior:', code || msg);
-    await signInWithRedirect(auth, googleProvider);
-    return;
-  }
+export async function loginWithGoogle(): Promise<User> {
+  const result = await signInWithPopup(auth, googleProvider);
+  return result.user;
 }
 
 export async function loginWithGoogleRedirect(): Promise<void> {
@@ -159,7 +144,7 @@ export async function checkRedirectAuthResult(): Promise<User | null> {
   try {
     const result = await getRedirectResult(auth);
     return result ? result.user : null;
-  } catch (err) {
+  } catch (err: any) {
     console.warn('getRedirectResult check:', err);
     return null;
   }

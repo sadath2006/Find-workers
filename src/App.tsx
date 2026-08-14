@@ -73,35 +73,27 @@ export default function App() {
   };
 
   useEffect(() => {
-    // Check for any pending redirect auth result from PWA/mobile Google login
-    checkRedirectAuthResult().catch(() => {});
+    let isMounted = true;
 
-    let isSplashDone = false;
-    let cachedUser: User | null = null;
-    let hasAuthResolved = false;
-
-    const splashTimer = setTimeout(() => {
-      isSplashDone = true;
-      if (hasAuthResolved) {
-        if (cachedUser) {
-          loadAndSetUserProfile(cachedUser);
-        } else {
-          setCurrentUser(null);
-          setScreen('login');
-        }
+    // Check for redirect result if returning from redirect login
+    checkRedirectAuthResult().then(async (redirectUser) => {
+      if (redirectUser && isMounted) {
+        await loadAndSetUserProfile(redirectUser);
       }
-    }, 800);
+    }).catch(() => {});
+
+    // Minimum splash duration so UI doesn't flicker
+    const minSplashPromise = new Promise(res => setTimeout(res, 500));
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
-      hasAuthResolved = true;
-      cachedUser = firebaseUser;
-      if (isSplashDone) {
-        if (firebaseUser) {
-          await loadAndSetUserProfile(firebaseUser);
-        } else {
-          setCurrentUser(null);
-          setScreen('login');
-        }
+      await minSplashPromise;
+      if (!isMounted) return;
+
+      if (firebaseUser) {
+        await loadAndSetUserProfile(firebaseUser);
+      } else {
+        setCurrentUser(null);
+        setScreen('login');
       }
     });
 
@@ -109,7 +101,7 @@ export default function App() {
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible' && auth.currentUser) {
         getUserProfile(auth.currentUser.uid).then(profile => {
-          if (profile) {
+          if (profile && isMounted) {
             setCurrentUser(prev => prev ? { ...prev, ...profile } : profile);
           }
         }).catch(() => {});
@@ -120,7 +112,7 @@ export default function App() {
     window.addEventListener('online', handleVisibilityOrOnline);
 
     return () => {
-      clearTimeout(splashTimer);
+      isMounted = false;
       unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       window.removeEventListener('online', handleVisibilityOrOnline);
