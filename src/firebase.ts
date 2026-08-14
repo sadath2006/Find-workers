@@ -1,10 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { 
-  initializeAuth,
-  indexedDBLocalPersistence,
-  browserLocalPersistence,
-  browserSessionPersistence,
-  inMemoryPersistence,
+  getAuth, 
   GoogleAuthProvider, 
   signInWithPopup, 
   signInWithRedirect,
@@ -43,10 +39,7 @@ import { compressImage } from './utils/imageCompressor';
 
 const app = initializeApp(firebaseConfig);
 
-// Initialize Firebase Auth with multiple fallback persistence tiers (IndexedDB -> localStorage -> sessionStorage -> memory)
-export const auth = initializeAuth(app, {
-  persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence, inMemoryPersistence]
-});
+export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
