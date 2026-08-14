@@ -28,11 +28,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
           message: 'Sign-in cancelled. Click "Sign in with Google" to try again.',
           isInfo: true,
         });
-      } else if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/cancelled-popup-request') {
+      } else if (
+        err?.code === 'auth/popup-blocked' || 
+        err?.code === 'auth/cancelled-popup-request' ||
+        err?.code === 'auth/operation-not-supported-in-this-environment'
+      ) {
         setError({
-          message: 'Popup was blocked by your browser. Please allow popups or use "Direct Mobile Sign-In" below.',
-          isInfo: false,
+          message: 'Popup blocked or not supported in this browser/PWA. Redirecting to direct sign-in...',
+          isInfo: true,
         });
+        await handleRedirectLogin();
       } else if (err?.code === 'auth/unauthorized-domain') {
         const domain = typeof window !== 'undefined' ? window.location.hostname : 'your domain';
         setError({

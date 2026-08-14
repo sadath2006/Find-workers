@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v13-directauth';
+const CACHE_NAME = 'findmyworkers-v14-robustauth';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

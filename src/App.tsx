@@ -13,63 +13,78 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [loadingMessage, setLoadingMessage] = useState('Checking authentication...');
 
+  const pendingLoadRef = React.useRef<{ uid: string; promise: Promise<void> } | null>(null);
+
   const loadAndSetUserProfile = async (firebaseUser: User) => {
-    setLoadingMessage('Loading user profile & permissions...');
-    const isFounder = firebaseUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
-
-    try {
-      const firestoreProfile = await getUserProfile(firebaseUser.uid);
-
-      let computedRole: UserRole = 'Public Member';
-      if (isFounder) {
-        computedRole = 'Founder';
-      } else if (firestoreProfile?.role) {
-        computedRole = firestoreProfile.role;
-      }
-
-      const userMobile = firestoreProfile?.mobileNumber || '';
-
-      // Check if user's mobile is registered as staff under any entity
-      if (computedRole === 'Public Member' && userMobile) {
-        try {
-          const staffEntities = await getStaffEntitiesForMobile(userMobile);
-          if (staffEntities.length > 0) {
-            computedRole = 'Staff';
-          }
-        } catch (_) {}
-      }
-
-      const profile: UserProfile = {
-        uid: firebaseUser.uid,
-        displayName: firebaseUser.displayName || 'User',
-        email: firebaseUser.email || '',
-        photoURL: firebaseUser.photoURL || '',
-        mobileNumber: userMobile,
-        role: computedRole,
-        isApproved: firestoreProfile?.isApproved || (computedRole === 'Founder')
-      };
-
-      setCurrentUser(profile);
-
-      // Check if mobile number is present
-      if (userMobile) {
-        setScreen('welcome');
-      } else {
-        setScreen('mobile_update');
-      }
-    } catch (error) {
-      console.error('Error loading profile from Firestore:', error);
-      setCurrentUser({
-        uid: firebaseUser.uid,
-        displayName: firebaseUser.displayName || 'User',
-        email: firebaseUser.email || '',
-        photoURL: firebaseUser.photoURL || '',
-        mobileNumber: '',
-        role: isFounder ? 'Founder' : 'Public Member',
-        isApproved: isFounder
-      });
-      setScreen('mobile_update');
+    if (pendingLoadRef.current && pendingLoadRef.current.uid === firebaseUser.uid) {
+      return pendingLoadRef.current.promise;
     }
+
+    const loadPromise = (async () => {
+      setLoadingMessage('Loading user profile & permissions...');
+      const isFounder = firebaseUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
+
+      try {
+        const firestoreProfile = await getUserProfile(firebaseUser.uid);
+
+        let computedRole: UserRole = 'Public Member';
+        if (isFounder) {
+          computedRole = 'Founder';
+        } else if (firestoreProfile?.role) {
+          computedRole = firestoreProfile.role;
+        }
+
+        const userMobile = firestoreProfile?.mobileNumber || '';
+
+        // Check if user's mobile is registered as staff under any entity
+        if (computedRole === 'Public Member' && userMobile) {
+          try {
+            const staffEntities = await getStaffEntitiesForMobile(userMobile);
+            if (staffEntities.length > 0) {
+              computedRole = 'Staff';
+            }
+          } catch (_) {}
+        }
+
+        const profile: UserProfile = {
+          uid: firebaseUser.uid,
+          displayName: firebaseUser.displayName || 'User',
+          email: firebaseUser.email || '',
+          photoURL: firebaseUser.photoURL || '',
+          mobileNumber: userMobile,
+          role: computedRole,
+          isApproved: firestoreProfile?.isApproved || (computedRole === 'Founder')
+        };
+
+        setCurrentUser(profile);
+
+        // Check if mobile number is present
+        if (userMobile) {
+          setScreen('welcome');
+        } else {
+          setScreen('mobile_update');
+        }
+      } catch (error) {
+        console.warn('Notice loading profile from Firestore:', error);
+        setCurrentUser({
+          uid: firebaseUser.uid,
+          displayName: firebaseUser.displayName || 'User',
+          email: firebaseUser.email || '',
+          photoURL: firebaseUser.photoURL || '',
+          mobileNumber: '',
+          role: isFounder ? 'Founder' : 'Public Member',
+          isApproved: isFounder
+        });
+        setScreen('mobile_update');
+      } finally {
+        if (pendingLoadRef.current?.uid === firebaseUser.uid) {
+          pendingLoadRef.current = null;
+        }
+      }
+    })();
+
+    pendingLoadRef.current = { uid: firebaseUser.uid, promise: loadPromise };
+    return loadPromise;
   };
 
   useEffect(() => {

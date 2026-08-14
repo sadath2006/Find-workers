@@ -73,9 +73,13 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errMessage = error instanceof Error ? error.message : String(error);
+  const rawMsg = error instanceof Error ? error.message : String(error);
+  if (isTransientFirestoreError(error)) {
+    console.warn(`Transient Firestore issue during ${operationType} on ${path}:`, rawMsg);
+    throw new Error('Connection temporarily interrupted. Please check your network and try again.');
+  }
   const errInfo: FirestoreErrorInfo = {
-    error: errMessage,
+    error: rawMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -84,7 +88,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   };
   console.error('Firestore Error:', JSON.stringify(errInfo));
-  throw new Error(errMessage);
+  throw new Error(rawMsg);
 }
 
 /**
@@ -113,7 +117,7 @@ function isTransientFirestoreError(error: any): boolean {
 /**
  * Executes a Firestore asynchronous operation with automatic retries on transient connection or closing errors.
  */
-async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 3, delayMs = 250): Promise<T> {
+async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 4, delayMs = 300): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -131,9 +135,32 @@ async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 3, delay
 }
 
 // Auth Helpers
-export async function loginWithGoogle(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  return result.user;
+export async function loginWithGoogle(): Promise<User | null> {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (err: any) {
+    const code = err?.code || '';
+    const msg = (err?.message || '').toLowerCase();
+
+    if (code === 'auth/unauthorized-domain') {
+      throw err;
+    }
+
+    // Auto-fallback to direct redirect sign-in if popup is blocked, cancelled by webview/PWA, or not supported in this environment
+    if (
+      code === 'auth/popup-blocked' ||
+      code === 'auth/operation-not-supported-in-this-environment' ||
+      code === 'auth/cancelled-popup-request' ||
+      msg.includes('popup') ||
+      msg.includes('not-supported')
+    ) {
+      console.info('Switching to redirect sign-in for PWA / mobile browser compatibility:', code || msg);
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    }
+    throw err;
+  }
 }
 
 export async function loginWithGoogleRedirect(): Promise<void> {
