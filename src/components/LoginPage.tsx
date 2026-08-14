@@ -15,43 +15,32 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
     setLoading(true);
     setError(null);
     try {
-      await loginWithGoogle();
-      onSuccess();
+      const user = await loginWithGoogle();
+      if (user) {
+        onSuccess();
+      }
     } catch (err: any) {
       console.warn('Google Sign-In caught:', err?.code, err?.message);
-      if (err?.code === 'auth/popup-closed-by-user') {
-        setError({
-          message: 'Sign-in cancelled. Click "Sign in with Google" to try again.',
-          isInfo: true,
-        });
-      } else if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/cancelled-popup-request') {
-        setError({
-          message: 'Popup was blocked by your browser. Attempting direct redirect login...',
-          isInfo: true,
-        });
-        try {
-          await loginWithGoogleRedirect();
-        } catch (redirectErr: any) {
-          setError({
-            message: redirectErr?.message || 'Redirect sign-in failed.',
-            isInfo: false,
-          });
-        }
-      } else if (err?.code === 'auth/unauthorized-domain') {
-        const domain = typeof window !== 'undefined' ? window.location.hostname : 'your Vercel domain';
+      if (err?.code === 'auth/unauthorized-domain') {
+        const domain = typeof window !== 'undefined' ? window.location.hostname : 'your domain';
         setError({
           message: `Domain not authorized: "${domain}". In Firebase Console > Authentication > Settings > Authorized domains, please add "${domain}".`,
           isInfo: false,
           isDomainError: true
         });
+        setLoading(false);
       } else {
-        setError({
-          message: err?.message || 'Failed to sign in with Google. Please try again.',
-          isInfo: false,
-        });
+        // In case anything else failed, try redirect directly
+        try {
+          await loginWithGoogleRedirect();
+        } catch (redirectErr: any) {
+          setError({
+            message: redirectErr?.message || err?.message || 'Failed to sign in. Please try again.',
+            isInfo: false,
+          });
+          setLoading(false);
+        }
       }
-    } finally {
-      setLoading(false);
     }
   };
 

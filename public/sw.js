@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v11-authfix';
+const CACHE_NAME = 'findmyworkers-v12-resilient';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

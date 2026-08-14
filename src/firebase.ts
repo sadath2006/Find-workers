@@ -132,9 +132,23 @@ async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 3, delay
 }
 
 // Auth Helpers
-export async function loginWithGoogle(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  return result.user;
+export async function loginWithGoogle(): Promise<User | void> {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (err: any) {
+    const code = err?.code || '';
+    const msg = (err?.message || '').toLowerCase();
+    
+    if (code === 'auth/unauthorized-domain') {
+      throw err;
+    }
+    
+    // Auto-fallback to direct redirect sign-in for any popup blocker, closing DB, or mobile browser environment
+    console.info('Switching to redirect sign-in due to popup/environment behavior:', code || msg);
+    await signInWithRedirect(auth, googleProvider);
+    return;
+  }
 }
 
 export async function loginWithGoogleRedirect(): Promise<void> {
@@ -152,12 +166,19 @@ export async function checkRedirectAuthResult(): Promise<User | null> {
 }
 
 export async function logoutUser(): Promise<void> {
+  try {
+    if (auth.currentUser) {
+      localStorage.removeItem(`fmp_user_profile_${auth.currentUser.uid}`);
+    }
+  } catch (_) {}
   await firebaseSignOut(auth);
 }
 
 // User Profile Firestore Helpers
 export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   const path = `users/${uid}`;
+  const localCacheKey = `fmp_user_profile_${uid}`;
+
   try {
     const userDocRef = doc(db, 'users', uid);
     const docSnap = await withFirestoreRetry(() => getDoc(userDocRef));
@@ -177,33 +198,51 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
       if (data.role === 'Public Member' && data.mobileNumber) {
         const cleanMobile = data.mobileNumber.replace(/\D/g, '');
         if (cleanMobile) {
-          const staffEntities = await getStaffEntitiesForMobile(cleanMobile);
-          if (staffEntities.length > 0) {
-            data.role = 'Staff';
-            updates.role = 'Staff';
-            needsUpdate = true;
-          }
+          try {
+            const staffEntities = await getStaffEntitiesForMobile(cleanMobile);
+            if (staffEntities.length > 0) {
+              data.role = 'Staff';
+              updates.role = 'Staff';
+              needsUpdate = true;
+            }
+          } catch (_) {}
         }
       }
 
       if (needsUpdate) {
         await withFirestoreRetry(() => updateDoc(userDocRef, updates)).catch(() => {});
       }
+
+      try {
+        localStorage.setItem(localCacheKey, JSON.stringify(data));
+      } catch (_) {}
+
       return data;
     }
-    return null;
   } catch (error) {
-    if (isTransientFirestoreError(error)) {
-      console.warn('getUserProfile transient error, skipping fatal abort:', error);
-      return null;
-    }
-    handleFirestoreError(error, OperationType.GET, path);
+    console.warn('getUserProfile fetch notice (falling back to cache):', error);
+    try {
+      const cached = localStorage.getItem(localCacheKey);
+      if (cached) {
+        return JSON.parse(cached) as UserProfile;
+      }
+    } catch (_) {}
     return null;
   }
+
+  try {
+    const cached = localStorage.getItem(localCacheKey);
+    if (cached) {
+      return JSON.parse(cached) as UserProfile;
+    }
+  } catch (_) {}
+  return null;
 }
 
 export async function saveUserProfile(uid: string, profileData: Partial<UserProfile>): Promise<UserProfile> {
   const path = `users/${uid}`;
+  const localCacheKey = `fmp_user_profile_${uid}`;
+
   try {
     const userDocRef = doc(db, 'users', uid);
     const docSnap = await withFirestoreRetry(() => getDoc(userDocRef)).catch(() => null);
@@ -237,15 +276,17 @@ export async function saveUserProfile(uid: string, profileData: Partial<UserProf
 
     // 2. Migrate staff mobile numbers in entities if user changed their mobile number
     if (oldCleanMobile && newCleanMobile && oldCleanMobile !== newCleanMobile) {
-      const staffEntities = await getStaffEntitiesForMobile(oldCleanMobile);
-      for (const ent of staffEntities) {
-        const updatedStaffMobiles = (ent.staffMobiles || []).map(m => m === oldCleanMobile ? newCleanMobile : m);
-        const entDocRef = doc(db, 'entities', ent.id);
-        await withFirestoreRetry(() => updateDoc(entDocRef, {
-          staffMobiles: updatedStaffMobiles,
-          updatedAt: new Date().toISOString()
-        })).catch(() => {});
-      }
+      try {
+        const staffEntities = await getStaffEntitiesForMobile(oldCleanMobile);
+        for (const ent of staffEntities) {
+          const updatedStaffMobiles = (ent.staffMobiles || []).map(m => m === oldCleanMobile ? newCleanMobile : m);
+          const entDocRef = doc(db, 'entities', ent.id);
+          await withFirestoreRetry(() => updateDoc(entDocRef, {
+            staffMobiles: updatedStaffMobiles,
+            updatedAt: new Date().toISOString()
+          })).catch(() => {});
+        }
+      } catch (_) {}
     }
 
     const isFounder = profileData.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
@@ -253,10 +294,12 @@ export async function saveUserProfile(uid: string, profileData: Partial<UserProf
 
     // Auto-check if mobile is in staffMobiles
     if (defaultRole === 'Public Member' && newCleanMobile) {
-      const staffEntities = await getStaffEntitiesForMobile(newCleanMobile);
-      if (staffEntities.length > 0) {
-        defaultRole = 'Staff';
-      }
+      try {
+        const staffEntities = await getStaffEntitiesForMobile(newCleanMobile);
+        if (staffEntities.length > 0) {
+          defaultRole = 'Staff';
+        }
+      } catch (_) {}
     }
 
     const payload: UserProfile = {
@@ -283,6 +326,11 @@ export async function saveUserProfile(uid: string, profileData: Partial<UserProf
         updatedAt: payload.updatedAt
       }));
     }
+
+    try {
+      localStorage.setItem(localCacheKey, JSON.stringify(payload));
+    } catch (_) {}
+
     return payload;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
