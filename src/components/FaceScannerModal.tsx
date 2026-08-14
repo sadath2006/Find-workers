@@ -205,8 +205,8 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       try {
         const video = videoRef.current;
         const canvas = document.createElement('canvas');
-        canvas.width = 320;
-        canvas.height = Math.round((320 * (video.videoHeight || 640)) / (video.videoWidth || 480));
+        canvas.width = 480;
+        canvas.height = Math.round((480 * (video.videoHeight || 640)) / (video.videoWidth || 480));
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
@@ -356,6 +356,39 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
           }).catch(e => console.warn('Scan logging error:', e));
 
           return;
+        }
+      }
+
+      // Server-side FAISS Fallback Check if local search yielded no match
+      if (result.embedding) {
+        try {
+          const sRes = await fetch('/api/face/faiss-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ embedding: result.embedding, threshold: DEFAULT_BIOMETRIC_THRESHOLD })
+          });
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            if (sData.duplicateFound && sData.matchedWorkerId) {
+              const found = allWorkers.find(w => w.id === sData.matchedWorkerId);
+              if (found) {
+                setMatchedWorker(found);
+                setStatusText(`Biometric Match Verified! (${sData.similarityScore}% Confidence)`);
+                logWorkerScan(found.id, {
+                  scannedByUid: currentUser.uid,
+                  scannedByName: currentUser.displayName,
+                  scannedByRole: currentUser.role,
+                  scannedByMobile: currentUser.mobileNumber,
+                  method,
+                  similarityScore: sData.similarityScore,
+                  confidence: sData.similarityScore
+                }).catch(e => console.warn('Scan logging error:', e));
+                return;
+              }
+            }
+          }
+        } catch (sErr) {
+          console.warn('Server FAISS fallback check skipped:', sErr);
         }
       }
 

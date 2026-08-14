@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v15-pwaauth';
+const CACHE_NAME = 'findmyworkers-v16-facescan';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

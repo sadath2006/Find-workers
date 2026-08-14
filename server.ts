@@ -272,7 +272,7 @@ async function startServer() {
   // FAISS Vector Similarity Search & Duplicate Detection Endpoint
   app.post("/api/face/faiss-search", (req, res) => {
     try {
-      const { embedding, embeddings, threshold = 0.90, topK = 1 } = req.body;
+      const { embedding, embeddings, threshold = 0.68, topK = 1 } = req.body;
 
       const queryVectors: number[][] = [];
       if (Array.isArray(embedding) && embedding.length === 512) {
@@ -331,21 +331,17 @@ async function startServer() {
       let similarityPercentage = 0;
       if (euclideanDist <= 0.20) {
         similarityPercentage = 99;
-      } else if (euclideanDist <= 0.32) {
-        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.12) * 4);
-      } else if (euclideanDist <= 0.44) {
-        similarityPercentage = Math.round(94 - ((euclideanDist - 0.32) / 0.12) * 9);
-      } else if (euclideanDist <= 0.55) {
-        similarityPercentage = Math.round(65 - ((euclideanDist - 0.44) / 0.11) * 25);
-      } else if (euclideanDist <= 0.70) {
-        similarityPercentage = Math.round(39 - ((euclideanDist - 0.55) / 0.15) * 23);
-      } else if (euclideanDist <= 0.95) {
-        similarityPercentage = Math.round(15 - ((euclideanDist - 0.70) / 0.25) * 15);
+      } else if (euclideanDist <= 0.35) {
+        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.15) * 5);
+      } else if (euclideanDist <= 0.80) {
+        similarityPercentage = Math.round(93 - ((euclideanDist - 0.35) / 0.45) * 28);
+      } else if (euclideanDist <= 1.00) {
+        similarityPercentage = Math.round(64 - ((euclideanDist - 0.80) / 0.20) * 34);
       } else {
-        similarityPercentage = 0;
+        similarityPercentage = Math.max(0, Math.round(29 - (euclideanDist - 1.00) * 20));
       }
 
-      const isDuplicate = similarity >= threshold && similarityPercentage >= 85 && !isNaN(euclideanDist) && !!bestMatch.id;
+      const isDuplicate = (similarity >= threshold || similarityPercentage >= 65) && similarity >= 0.60 && !isNaN(euclideanDist) && !!bestMatch.id;
       const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
 
       return res.json({
