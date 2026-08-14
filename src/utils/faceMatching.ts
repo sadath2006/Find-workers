@@ -17,34 +17,34 @@ import { FaissIndexFlatIP } from './faissIndex';
 import { normalizeImageToSquareDataUrl } from './imageCompressor';
 
 export const ARCFACE_VERSION = 'arcface_512d_v2';
-export const DEFAULT_BIOMETRIC_THRESHOLD = 0.65; // Calibrated Cosine threshold for same-person verification across devices (>= 0.65, Euclidean <= 0.83)
-export const DEFAULT_EUCLIDEAN_THRESHOLD = 0.83; // Maximum Euclidean distance for declaring a match (<= 0.83)
+export const DEFAULT_BIOMETRIC_THRESHOLD = 0.86; // Calibrated Cosine threshold for same-person verification across devices (>= 0.86, Euclidean <= 0.52)
+export const DEFAULT_EUCLIDEAN_THRESHOLD = 0.52; // Maximum Euclidean distance for declaring a match (<= 0.52)
 
 /**
  * Converts Euclidean Distance / Cosine Similarity into an accurate, human-calibrated biometric identity confidence percentage.
- * - Confidence 68% - 99%: Same Person Match (DUPLICATE)
- * - Confidence 30% - 67%: Distinct Individuals with similar structure (NOT_DUPLICATE)
+ * - Confidence 78% - 99%: Same Person Match (DUPLICATE)
+ * - Confidence 30% - 74%: Distinct Individuals with similar structure (NOT_DUPLICATE)
  * - Confidence 0% - 29%: Dissimilar Faces / Strangers (NOT_DUPLICATE)
  */
 export function calculateBiometricConfidence(euclideanDistance: number): number {
   if (euclideanDistance <= 0.20) {
     // Exact identical photo / same session match: 98% to 99%
     return 99;
-  } else if (euclideanDistance <= 0.45) {
-    // High certainty same person: 85% to 98%
-    const progress = (euclideanDistance - 0.20) / (0.45 - 0.20);
-    return Math.round(98 - progress * 13);
+  } else if (euclideanDistance <= 0.40) {
+    // High certainty same person: 88% to 98%
+    const progress = (euclideanDistance - 0.20) / (0.40 - 0.20);
+    return Math.round(98 - progress * 10);
   } else if (euclideanDistance <= DEFAULT_EUCLIDEAN_THRESHOLD) {
-    // Same person threshold across different mobile cameras/lighting/angles: 68% to 85%
-    const progress = (euclideanDistance - 0.45) / (DEFAULT_EUCLIDEAN_THRESHOLD - 0.45);
-    return Math.round(85 - progress * 17);
-  } else if (euclideanDistance <= 1.05) {
-    // Distinct individuals (NOT a duplicate): 30% to 67%
-    const progress = (euclideanDistance - DEFAULT_EUCLIDEAN_THRESHOLD) / (1.05 - DEFAULT_EUCLIDEAN_THRESHOLD);
-    return Math.round(67 - progress * 37);
+    // Same person threshold across different mobile cameras/lighting/angles: 78% to 88%
+    const progress = (euclideanDistance - 0.40) / (DEFAULT_EUCLIDEAN_THRESHOLD - 0.40);
+    return Math.round(88 - progress * 10);
+  } else if (euclideanDistance <= 0.90) {
+    // Distinct individuals (NOT a duplicate): 30% to 74%
+    const progress = (euclideanDistance - DEFAULT_EUCLIDEAN_THRESHOLD) / (0.90 - DEFAULT_EUCLIDEAN_THRESHOLD);
+    return Math.round(74 - progress * 44);
   } else {
     // Completely dissimilar face: 0% to 29%
-    return Math.max(0, Math.round(29 - (euclideanDistance - 1.05) * 15));
+    return Math.max(0, Math.round(29 - (euclideanDistance - 0.90) * 15));
   }
 }
 
@@ -789,7 +789,7 @@ export async function verifyArcFaceDuplicateFaiss(
 
   const bestEuclidean = bestSim > 0 ? Math.sqrt(Math.max(0, 2 - 2 * bestSim)) : 999;
   const score = calculateBiometricConfidence(bestEuclidean);
-  const isDuplicate = (bestSim >= threshold || score >= 68) && bestSim >= 0.58 && !!bestWorkerId;
+  const isDuplicate = (bestSim >= threshold || score >= 78) && bestSim >= 0.85 && !!bestWorkerId;
 
   return {
     duplicateFound: isDuplicate,

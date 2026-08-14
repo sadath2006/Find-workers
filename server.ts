@@ -272,7 +272,7 @@ async function startServer() {
   // FAISS Vector Similarity Search & Duplicate Detection Endpoint
   app.post("/api/face/faiss-search", (req, res) => {
     try {
-      const { embedding, embeddings, threshold = 0.65, topK = 1 } = req.body;
+      const { embedding, embeddings, threshold = 0.86, topK = 1 } = req.body;
 
       const queryVectors: number[][] = [];
       if (Array.isArray(embedding) && embedding.length === 512) {
@@ -331,17 +331,17 @@ async function startServer() {
       let similarityPercentage = 0;
       if (euclideanDist <= 0.20) {
         similarityPercentage = 99;
-      } else if (euclideanDist <= 0.45) {
-        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.25) * 13);
-      } else if (euclideanDist <= 0.83) {
-        similarityPercentage = Math.round(85 - ((euclideanDist - 0.45) / 0.38) * 17);
-      } else if (euclideanDist <= 1.05) {
-        similarityPercentage = Math.round(67 - ((euclideanDist - 0.83) / 0.22) * 37);
+      } else if (euclideanDist <= 0.40) {
+        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.20) * 10);
+      } else if (euclideanDist <= 0.52) {
+        similarityPercentage = Math.round(88 - ((euclideanDist - 0.40) / 0.12) * 10);
+      } else if (euclideanDist <= 0.90) {
+        similarityPercentage = Math.round(74 - ((euclideanDist - 0.52) / 0.38) * 44);
       } else {
-        similarityPercentage = Math.max(0, Math.round(29 - (euclideanDist - 1.05) * 15));
+        similarityPercentage = Math.max(0, Math.round(29 - (euclideanDist - 0.90) * 15));
       }
 
-      const isDuplicate = (similarity >= threshold || similarityPercentage >= 68) && similarity >= 0.58 && !isNaN(euclideanDist) && !!bestMatch.id;
+      const isDuplicate = (similarity >= threshold || similarityPercentage >= 78) && similarity >= 0.85 && !isNaN(euclideanDist) && !!bestMatch.id;
       const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
 
       return res.json({
