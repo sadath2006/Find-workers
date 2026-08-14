@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, getUserProfile, getStaffEntitiesForMobile } from './firebase';
+import { auth, getUserProfile, getStaffEntitiesForMobile, checkRedirectAuthResult } from './firebase';
 import { UserProfile, AppScreen, FOUNDER_EMAIL, UserRole } from './types';
 import { SplashLoading } from './components/SplashLoading';
 import { LoginPage } from './components/LoginPage';
@@ -69,20 +69,42 @@ export default function App() {
   };
 
   useEffect(() => {
+    // Check for any pending redirect auth result from PWA/mobile Google login
+    checkRedirectAuthResult().catch(() => {});
+
+    let isSplashDone = false;
+    let cachedUser: User | null = null;
+    let hasAuthResolved = false;
+
     const splashTimer = setTimeout(() => {
-      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+      isSplashDone = true;
+      if (hasAuthResolved) {
+        if (cachedUser) {
+          loadAndSetUserProfile(cachedUser);
+        } else {
+          setCurrentUser(null);
+          setScreen('login');
+        }
+      }
+    }, 1200);
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+      hasAuthResolved = true;
+      cachedUser = firebaseUser;
+      if (isSplashDone) {
         if (firebaseUser) {
           await loadAndSetUserProfile(firebaseUser);
         } else {
           setCurrentUser(null);
           setScreen('login');
         }
-      });
+      }
+    });
 
-      return () => unsubscribe();
-    }, 1400);
-
-    return () => clearTimeout(splashTimer);
+    return () => {
+      clearTimeout(splashTimer);
+      unsubscribe();
+    };
   }, []);
 
   const handleRefreshUser = async () => {

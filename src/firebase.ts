@@ -3,12 +3,15 @@ import {
   getAuth, 
   GoogleAuthProvider, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   signOut as firebaseSignOut, 
   User 
 } from 'firebase/auth';
 import { 
   getFirestore, 
   initializeFirestore,
+  memoryLocalCache,
   doc, 
   getDoc, 
   setDoc, 
@@ -39,13 +42,16 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Initialize Firestore with auto-detect long polling to prevent connection drop issues in iframe / sandbox environments
+// Initialize Firestore with memoryLocalCache and auto-detect long polling
+// This completely prevents 'Database connection is closing' / IndexedDB lock issues in PWA standalone mode
 export const db = firebaseConfig.firestoreDatabaseId 
   ? initializeFirestore(app, {
+      localCache: memoryLocalCache(),
       experimentalAutoDetectLongPolling: true,
       ignoreUndefinedProperties: true,
     }, firebaseConfig.firestoreDatabaseId)
   : initializeFirestore(app, {
+      localCache: memoryLocalCache(),
       experimentalAutoDetectLongPolling: true,
       ignoreUndefinedProperties: true,
     });
@@ -85,8 +91,32 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 
 // Auth Helpers
 export async function loginWithGoogle(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  return result.user;
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (err: any) {
+    if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/cancelled-popup-request') {
+      console.log('Popup blocked or cancelled, initiating redirect flow...');
+      await signInWithRedirect(auth, googleProvider);
+      // Wait indefinitely while page redirects
+      return new Promise(() => {});
+    }
+    throw err;
+  }
+}
+
+export async function loginWithGoogleRedirect(): Promise<void> {
+  await signInWithRedirect(auth, googleProvider);
+}
+
+export async function checkRedirectAuthResult(): Promise<User | null> {
+  try {
+    const result = await getRedirectResult(auth);
+    return result ? result.user : null;
+  } catch (err) {
+    console.warn('getRedirectResult check:', err);
+    return null;
+  }
 }
 
 export async function logoutUser(): Promise<void> {
