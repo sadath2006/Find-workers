@@ -272,7 +272,7 @@ async function startServer() {
   // FAISS Vector Similarity Search & Duplicate Detection Endpoint
   app.post("/api/face/faiss-search", (req, res) => {
     try {
-      const { embedding, embeddings, threshold = 0.88, topK = 1 } = req.body;
+      const { embedding, embeddings, threshold = 0.65, topK = 1 } = req.body;
 
       const queryVectors: number[][] = [];
       if (Array.isArray(embedding) && embedding.length === 512) {
@@ -331,19 +331,17 @@ async function startServer() {
       let similarityPercentage = 0;
       if (euclideanDist <= 0.20) {
         similarityPercentage = 99;
-      } else if (euclideanDist <= 0.35) {
-        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.15) * 6);
-      } else if (euclideanDist <= 0.48) {
-        similarityPercentage = Math.round(92 - ((euclideanDist - 0.35) / 0.13) * 12);
-      } else if (euclideanDist <= 0.65) {
-        similarityPercentage = Math.round(79 - ((euclideanDist - 0.48) / 0.17) * 39);
-      } else if (euclideanDist <= 1.00) {
-        similarityPercentage = Math.round(39 - ((euclideanDist - 0.65) / 0.35) * 29);
+      } else if (euclideanDist <= 0.45) {
+        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.25) * 13);
+      } else if (euclideanDist <= 0.83) {
+        similarityPercentage = Math.round(85 - ((euclideanDist - 0.45) / 0.38) * 17);
+      } else if (euclideanDist <= 1.05) {
+        similarityPercentage = Math.round(67 - ((euclideanDist - 0.83) / 0.22) * 37);
       } else {
-        similarityPercentage = Math.max(0, Math.round(9 - (euclideanDist - 1.00) * 10));
+        similarityPercentage = Math.max(0, Math.round(29 - (euclideanDist - 1.05) * 15));
       }
 
-      const isDuplicate = similarity >= threshold && similarityPercentage >= 80 && !isNaN(euclideanDist) && !!bestMatch.id;
+      const isDuplicate = (similarity >= threshold || similarityPercentage >= 68) && similarity >= 0.58 && !isNaN(euclideanDist) && !!bestMatch.id;
       const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
 
       return res.json({

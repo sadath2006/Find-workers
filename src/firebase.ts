@@ -46,12 +46,13 @@ setPersistence(auth, browserLocalPersistence).catch(() => {});
 
 export const googleProvider = new GoogleAuthProvider();
 
-// Initialize Firestore strictly with in-memory caching to eliminate any IndexedDB connection closing / lock / multi-tab issues
+// Initialize Firestore strictly with in-memory caching and forced long-polling to prevent connection drops across proxies/PWAs
 export const db = initializeFirestore(
   app,
   {
     localCache: memoryLocalCache(),
     ignoreUndefinedProperties: true,
+    experimentalForceLongPolling: true,
   },
   firebaseConfig.firestoreDatabaseId || undefined
 );
