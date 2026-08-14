@@ -19,14 +19,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
       await loginWithGoogle();
       onSuccess();
     } catch (err: any) {
+      const errMsg = err?.message || String(err);
       if (err?.code === 'auth/popup-closed-by-user') {
         setError({
           message: 'Sign-in was cancelled. Click "Sign in with Google" to try again.',
           isInfo: true,
         });
-      } else if (err?.code === 'auth/popup-blocked') {
+      } else if (
+        err?.code === 'auth/popup-blocked' || 
+        errMsg.toLowerCase().includes('closing') || 
+        errMsg.toLowerCase().includes('hidden')
+      ) {
         setError({
-          message: 'Popup was blocked by your browser. Redirecting to Google login...',
+          message: 'Redirecting to Google sign-in...',
           isInfo: true,
         });
         setRedirecting(true);
