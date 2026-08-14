@@ -13,7 +13,10 @@ import {
   loadFaceApiModels,
   FacePipelineDebugResponse,
   extractArcFaceEmbedding,
-  verifyArcFaceDuplicateFaiss
+  verifyArcFaceDuplicateFaiss,
+  detectSingleFaceSafely,
+  projectToArcFace512D,
+  isValidArcFaceVector
 } from '../utils/faceMatching';
 import { compressImage } from '../utils/imageCompressor';
 import { WorkerDetailModal } from './WorkerDetailModal';
@@ -193,7 +196,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
     }
   }, []);
 
-  // Real-Time Live Stream Face Scanner (auto-detects face in view)
+  // Real-Time Live Stream Face Scanner (auto-detects face in view directly from HTMLVideoElement)
   const startLiveFaceScanner = () => {
     if (liveScanTimerRef.current) clearInterval(liveScanTimerRef.current);
 
@@ -204,24 +207,21 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       isScanningFrameRef.current = true;
       try {
         const video = videoRef.current;
-        const canvas = document.createElement('canvas');
-        canvas.width = 480;
-        canvas.height = Math.round((480 * (video.videoHeight || 640)) / (video.videoWidth || 480));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+        const detection = await detectSingleFaceSafely(video, 0.20);
+        if (!detection || !detection.descriptor) {
+          setLiveMatch(null);
+          return;
+        }
 
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.65);
-
-        const vector = await extractArcFaceEmbedding(frameDataUrl);
-        if (!vector) {
+        const arcface512 = projectToArcFace512D(detection.descriptor);
+        if (!isValidArcFaceVector(arcface512)) {
           setLiveMatch(null);
           return;
         }
 
         const workers = workersCacheRef.current;
         if (workers && workers.length > 0) {
-          const matchResult = await verifyArcFaceDuplicateFaiss(vector, undefined, workers, DEFAULT_BIOMETRIC_THRESHOLD);
+          const matchResult = await verifyArcFaceDuplicateFaiss(arcface512, undefined, workers, DEFAULT_BIOMETRIC_THRESHOLD);
           if (matchResult.duplicateFound && matchResult.matchedWorkerId) {
             const matched = workers.find(w => w.id === matchResult.matchedWorkerId);
             if (matched) {
@@ -229,6 +229,8 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
                 worker: matched,
                 similarityScore: matchResult.similarityScore
               });
+            } else {
+              setLiveMatch(null);
             }
           } else {
             setLiveMatch(null);
@@ -239,7 +241,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       } finally {
         isScanningFrameRef.current = false;
       }
-    }, 750);
+    }, 600);
   };
 
   // Toggle Camera Front / Back
