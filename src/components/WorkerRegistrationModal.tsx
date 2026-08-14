@@ -8,6 +8,7 @@ import {
   runFaceRecognitionPipeline,
   FacePipelineDebugResponse,
   isValidArcFaceVector, 
+  DEFAULT_BIOMETRIC_THRESHOLD,
   ARCFACE_VERSION 
 } from '../utils/faceMatching';
 import { compressImage } from '../utils/imageCompressor';
@@ -250,7 +251,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
         const allWorkers = workersCacheRef.current;
         
         if (allWorkers && allWorkers.length > 0) {
-          const matchResult = await verifyArcFaceDuplicateFaiss(vector, frameDataUrl, allWorkers, 0.72);
+          const matchResult = await verifyArcFaceDuplicateFaiss(vector, frameDataUrl, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
           if (matchResult.duplicateFound && matchResult.matchedWorkerId) {
             const matchedWorker = allWorkers.find(w => w.id === matchResult.matchedWorkerId);
             if (matchedWorker) {
@@ -329,8 +330,8 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
       const allWorkers = await getAllWorkers();
       console.log(`Fetched ${allWorkers.length} workers from Firestore for FAISS duplicate check`);
 
-      // Execute full mandatory face recognition pipeline (Threshold = 0.72)
-      const pipelineResult = await runFaceRecognitionPipeline(rawDataUrl, allWorkers, 0.72);
+      // Execute full mandatory face recognition pipeline (Threshold = DEFAULT_BIOMETRIC_THRESHOLD)
+      const pipelineResult = await runFaceRecognitionPipeline(rawDataUrl, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
       setPipelineDebug(pipelineResult);
       setFaceVector(pipelineResult.embedding || []);
 
@@ -352,7 +353,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
           setAadharNumber(matchedWorker.aadhar || '');
           setMsg({ 
             type: 'warning', 
-            text: `⚠️ DUPLICATE Flagged! Matched with ${matchedWorker.name} (${pipelineResult.similarityScore}% Cosine Similarity >= 68% Threshold).` 
+            text: `⚠️ DUPLICATE Flagged! Matched with ${matchedWorker.name} (${pipelineResult.similarityScore}% Biometric Match Confidence).` 
           });
         }
       } else {

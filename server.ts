@@ -108,6 +108,15 @@ async function startServer() {
     });
   });
 
+  function isLegacyCorruptedVector(vec: number[]): boolean {
+    if (!vec || !Array.isArray(vec) || vec.length !== 512) return true;
+    let totalQuadrantDiff = 0;
+    for (let i = 0; i < 128; i++) {
+      totalQuadrantDiff += Math.abs(vec[i] - vec[i + 128]) + Math.abs(vec[i] - vec[i + 256]);
+    }
+    return totalQuadrantDiff > 0.01;
+  }
+
   // FAISS Sync Endpoint: Syncs/Rebuilds FAISS Index with 512D ArcFace embeddings from Firestore
   app.post("/api/face/faiss-sync", async (req, res) => {
     try {
@@ -133,19 +142,19 @@ async function startServer() {
         // Multi-photo ArcFace embeddings
         if (Array.isArray(w.arcfaceEmbeddings) && w.arcfaceEmbeddings.length > 0) {
           for (const vec of w.arcfaceEmbeddings) {
-            if (Array.isArray(vec) && vec.length === 512) {
+            if (Array.isArray(vec) && vec.length === 512 && !isLegacyCorruptedVector(vec)) {
               records.push({ id: w.id, vector: vec });
             }
           }
         } 
         // Single ArcFace embedding
-        else if (Array.isArray(w.faceEmbedding) && w.faceEmbedding.length === 512) {
+        else if (Array.isArray(w.faceEmbedding) && w.faceEmbedding.length === 512 && !isLegacyCorruptedVector(w.faceEmbedding)) {
           records.push({ id: w.id, vector: w.faceEmbedding });
         }
       }
 
       faissIndex.buildIndex(records);
-      console.log(`✅ FAISS Index rebuilt successfully with ${records.length} ArcFace 512D vectors for ${workerMetadataStore.size} workers.`);
+      console.log(`✅ FAISS Index rebuilt successfully with ${records.length} valid ArcFace 512D vectors for ${workerMetadataStore.size} workers.`);
 
       return res.json({
         success: true,
@@ -161,7 +170,7 @@ async function startServer() {
   // FAISS Vector Similarity Search & Duplicate Detection Endpoint
   app.post("/api/face/faiss-search", (req, res) => {
     try {
-      const { embedding, embeddings, threshold = 0.68, topK = 1 } = req.body;
+      const { embedding, embeddings, threshold = 0.925, topK = 1 } = req.body;
 
       const queryVectors: number[][] = [];
       if (Array.isArray(embedding) && embedding.length === 512) {
@@ -216,7 +225,22 @@ async function startServer() {
 
       const similarity = bestMatch.similarity; // Cosine similarity (-1 to 1)
       const isDuplicate = similarity >= threshold;
-      const similarityPercentage = Math.min(100, Math.max(0, Math.round(similarity * 100)));
+      
+      // Calculate calibrated Euclidean distance and Biometric confidence percentage
+      const euclideanDist = similarity > 0 ? Math.sqrt(Math.max(0, 2 - 2 * similarity)) : 999;
+      let similarityPercentage = 0;
+      if (euclideanDist <= 0.15) {
+        similarityPercentage = 99;
+      } else if (euclideanDist <= 0.39) {
+        similarityPercentage = Math.round(98 - ((euclideanDist - 0.15) / 0.24) * 18);
+      } else if (euclideanDist <= 0.55) {
+        similarityPercentage = Math.round(55 - ((euclideanDist - 0.39) / 0.16) * 35);
+      } else if (euclideanDist <= 0.70) {
+        similarityPercentage = Math.round(19 - ((euclideanDist - 0.55) / 0.15) * 14);
+      } else {
+        similarityPercentage = 0;
+      }
+
       const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
 
       return res.json({
@@ -226,6 +250,7 @@ async function startServer() {
         matchedWorker: isDuplicate ? workerMeta : null,
         similarityScore: similarityPercentage,
         cosineSimilarity: similarity,
+        euclideanDistance: euclideanDist,
         thresholdUsed: threshold,
         topMatchId: bestMatch.id
       });
