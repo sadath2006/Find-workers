@@ -10,8 +10,6 @@ import {
 } from 'firebase/auth';
 import { 
   getFirestore, 
-  initializeFirestore,
-  memoryLocalCache,
   doc, 
   getDoc, 
   setDoc, 
@@ -45,19 +43,10 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Initialize Firestore with memoryLocalCache and auto-detect long polling
-// This completely prevents 'Database connection is closing' / IndexedDB lock issues in PWA standalone mode
+// Official standard Firestore initialization using database ID from config
 export const db = firebaseConfig.firestoreDatabaseId 
-  ? initializeFirestore(app, {
-      localCache: memoryLocalCache(),
-      experimentalAutoDetectLongPolling: true,
-      ignoreUndefinedProperties: true,
-    }, firebaseConfig.firestoreDatabaseId)
-  : initializeFirestore(app, {
-      localCache: memoryLocalCache(),
-      experimentalAutoDetectLongPolling: true,
-      ignoreUndefinedProperties: true,
-    });
+  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+  : getFirestore(app);
 
 enum OperationType {
   CREATE = 'create',
@@ -79,8 +68,9 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMessage = error instanceof Error ? error.message : String(error);
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMessage,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -90,6 +80,48 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   };
   console.error('Firestore Error:', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+/**
+ * Checks if an error is a transient connection, closing database, or offline error.
+ */
+function isTransientFirestoreError(error: any): boolean {
+  if (!error) return false;
+  const msg = (error?.message || String(error)).toLowerCase();
+  const code = (error?.code || '').toLowerCase();
+  return (
+    msg.includes('closing') ||
+    msg.includes('closed') ||
+    msg.includes('hidden') ||
+    msg.includes('offline') ||
+    msg.includes('unavailable') ||
+    msg.includes('network') ||
+    msg.includes('timeout') ||
+    msg.includes('aborted') ||
+    msg.includes('failed to get document') ||
+    code.includes('unavailable') ||
+    code.includes('deadline-exceeded')
+  );
+}
+
+/**
+ * Executes a Firestore asynchronous operation with automatic retries on transient connection or closing errors.
+ */
+async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 2, delayMs = 300): Promise<T> {
+  let lastError: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries && isTransientFirestoreError(err)) {
+        await new Promise(res => setTimeout(res, delayMs * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
 }
 
 // Auth Helpers
@@ -121,7 +153,7 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   const path = `users/${uid}`;
   try {
     const userDocRef = doc(db, 'users', uid);
-    const docSnap = await getDoc(userDocRef);
+    const docSnap = await withFirestoreRetry(() => getDoc(userDocRef));
     if (docSnap.exists()) {
       const data = docSnap.data() as UserProfile;
       let needsUpdate = false;
@@ -148,12 +180,16 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
       }
 
       if (needsUpdate) {
-        await updateDoc(userDocRef, updates);
+        await withFirestoreRetry(() => updateDoc(userDocRef, updates)).catch(() => {});
       }
       return data;
     }
     return null;
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      console.warn('getUserProfile transient error, skipping fatal abort:', error);
+      return null;
+    }
     handleFirestoreError(error, OperationType.GET, path);
     return null;
   }
@@ -163,26 +199,28 @@ export async function saveUserProfile(uid: string, profileData: Partial<UserProf
   const path = `users/${uid}`;
   try {
     const userDocRef = doc(db, 'users', uid);
-    const docSnap = await getDoc(userDocRef);
+    const docSnap = await withFirestoreRetry(() => getDoc(userDocRef)).catch(() => null);
 
     const newCleanMobile = (profileData.mobileNumber || '').replace(/\D/g, '');
-    const oldCleanMobile = docSnap.exists() ? (docSnap.data()?.mobileNumber || '').replace(/\D/g, '') : '';
+    const oldCleanMobile = docSnap && docSnap.exists() ? (docSnap.data()?.mobileNumber || '').replace(/\D/g, '') : '';
 
     // 1. Mobile Number Uniqueness Check across users
     if (newCleanMobile) {
       const usersCol = collection(db, 'users');
-      const allUsersSnap = await getDocs(usersCol);
+      const allUsersSnap = await withFirestoreRetry(() => getDocs(usersCol)).catch(() => null);
       let duplicateUser: UserProfile | null = null;
 
-      allUsersSnap.forEach((uDoc) => {
-        if (uDoc.id !== uid) {
-          const uData = uDoc.data() as UserProfile;
-          const uClean = (uData.mobileNumber || '').replace(/\D/g, '');
-          if (uClean && uClean === newCleanMobile) {
-            duplicateUser = uData;
+      if (allUsersSnap) {
+        allUsersSnap.forEach((uDoc) => {
+          if (uDoc.id !== uid) {
+            const uData = uDoc.data() as UserProfile;
+            const uClean = (uData.mobileNumber || '').replace(/\D/g, '');
+            if (uClean && uClean === newCleanMobile) {
+              duplicateUser = uData;
+            }
           }
-        }
-      });
+        });
+      }
 
       if (duplicateUser) {
         const dupName = (duplicateUser as UserProfile).displayName || (duplicateUser as UserProfile).email || 'another user';
@@ -196,15 +234,15 @@ export async function saveUserProfile(uid: string, profileData: Partial<UserProf
       for (const ent of staffEntities) {
         const updatedStaffMobiles = (ent.staffMobiles || []).map(m => m === oldCleanMobile ? newCleanMobile : m);
         const entDocRef = doc(db, 'entities', ent.id);
-        await updateDoc(entDocRef, {
+        await withFirestoreRetry(() => updateDoc(entDocRef, {
           staffMobiles: updatedStaffMobiles,
           updatedAt: new Date().toISOString()
-        });
+        })).catch(() => {});
       }
     }
 
     const isFounder = profileData.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
-    let defaultRole: UserRole = isFounder ? 'Founder' : (profileData.role || (docSnap.exists() ? docSnap.data()?.role : 'Public Member') || 'Public Member');
+    let defaultRole: UserRole = isFounder ? 'Founder' : (profileData.role || (docSnap && docSnap.exists() ? docSnap.data()?.role : 'Public Member') || 'Public Member');
 
     // Auto-check if mobile is in staffMobiles
     if (defaultRole === 'Public Member' && newCleanMobile) {
@@ -216,27 +254,27 @@ export async function saveUserProfile(uid: string, profileData: Partial<UserProf
 
     const payload: UserProfile = {
       uid,
-      displayName: profileData.displayName || (docSnap.exists() ? docSnap.data()?.displayName : 'User'),
-      email: profileData.email || (docSnap.exists() ? docSnap.data()?.email : ''),
-      photoURL: profileData.photoURL || (docSnap.exists() ? docSnap.data()?.photoURL : ''),
+      displayName: profileData.displayName || (docSnap && docSnap.exists() ? docSnap.data()?.displayName : 'User'),
+      email: profileData.email || (docSnap && docSnap.exists() ? docSnap.data()?.email : ''),
+      photoURL: profileData.photoURL || (docSnap && docSnap.exists() ? docSnap.data()?.photoURL : ''),
       mobileNumber: newCleanMobile,
       role: defaultRole,
-      isApproved: isFounder ? true : (docSnap.exists() ? docSnap.data()?.isApproved || false : false),
-      createdAt: docSnap.exists() ? docSnap.data()?.createdAt : new Date().toISOString(),
+      isApproved: isFounder ? true : (docSnap && docSnap.exists() ? docSnap.data()?.isApproved || false : false),
+      createdAt: docSnap && docSnap.exists() ? docSnap.data()?.createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
-    if (!docSnap.exists()) {
-      await setDoc(userDocRef, payload);
+    if (!docSnap || !docSnap.exists()) {
+      await withFirestoreRetry(() => setDoc(userDocRef, payload));
     } else {
-      await updateDoc(userDocRef, {
+      await withFirestoreRetry(() => updateDoc(userDocRef, {
         displayName: payload.displayName,
         email: payload.email,
         photoURL: payload.photoURL,
         mobileNumber: payload.mobileNumber,
         role: payload.role,
         updatedAt: payload.updatedAt
-      });
+      }));
     }
     return payload;
   } catch (error) {
@@ -249,13 +287,17 @@ export async function getAllUsers(): Promise<UserProfile[]> {
   const path = 'users';
   try {
     const usersCol = collection(db, 'users');
-    const snapshot = await getDocs(usersCol);
+    const snapshot = await withFirestoreRetry(() => getDocs(usersCol));
     const users: UserProfile[] = [];
     snapshot.forEach(docSnap => {
       users.push(docSnap.data() as UserProfile);
     });
     return users;
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      console.warn('getAllUsers transient connection warning:', error);
+      return [];
+    }
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
@@ -277,13 +319,13 @@ export async function updateUserRole(
     }
 
     const userDocRef = doc(db, 'users', targetUid);
-    const userSnap = await getDoc(userDocRef);
+    const userSnap = await withFirestoreRetry(() => getDoc(userDocRef));
     const userData = userSnap.exists() ? (userSnap.data() as UserProfile) : null;
 
-    await updateDoc(userDocRef, {
+    await withFirestoreRetry(() => updateDoc(userDocRef, {
       role: newRole,
       updatedAt: new Date().toISOString()
-    });
+    }));
 
     // If role changed to Public Member, remove staff assignment from all entities
     if (newRole === 'Public Member' && userData?.mobileNumber) {
@@ -292,10 +334,10 @@ export async function updateUserRole(
         const staffEntities = await getStaffEntitiesForMobile(cleanMobile);
         for (const ent of staffEntities) {
           const updatedMobiles = (ent.staffMobiles || []).filter(m => m !== cleanMobile);
-          await updateDoc(doc(db, 'entities', ent.id), {
+          await withFirestoreRetry(() => updateDoc(doc(db, 'entities', ent.id), {
             staffMobiles: updatedMobiles,
             updatedAt: new Date().toISOString()
-          });
+          })).catch(() => {});
         }
       }
     }
@@ -308,10 +350,10 @@ export async function approveUser(targetUid: string): Promise<void> {
   const path = `users/${targetUid}`;
   try {
     const userDocRef = doc(db, 'users', targetUid);
-    await updateDoc(userDocRef, {
+    await withFirestoreRetry(() => updateDoc(userDocRef, {
       isApproved: true,
       updatedAt: new Date().toISOString()
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -324,7 +366,7 @@ export async function deleteUserDocument(targetUid: string, requesterRole: UserR
       throw new Error('Only Founder or Super Admin can delete user profiles.');
     }
     const userDocRef = doc(db, 'users', targetUid);
-    await deleteDoc(userDocRef);
+    await withFirestoreRetry(() => deleteDoc(userDocRef));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -336,7 +378,7 @@ export async function createOrUpdateEntity(entityData: Partial<EntityRecord>): P
   try {
     const entityId = entityData.id || doc(collection(db, 'entities')).id;
     const entityRef = doc(db, 'entities', entityId);
-    const existingSnap = await getDoc(entityRef);
+    const existingSnap = await withFirestoreRetry(() => getDoc(entityRef)).catch(() => null);
 
     const payload: EntityRecord = {
       id: entityId,
@@ -350,11 +392,11 @@ export async function createOrUpdateEntity(entityData: Partial<EntityRecord>): P
       ownerMobile: entityData.ownerMobile || '',
       staffMobiles: entityData.staffMobiles || [],
       hasUpdatedDetails: true, // Marked as true once updated
-      createdAt: existingSnap.exists() ? existingSnap.data()?.createdAt : new Date().toISOString(),
+      createdAt: existingSnap && existingSnap.exists() ? existingSnap.data()?.createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
-    await setDoc(entityRef, payload);
+    await withFirestoreRetry(() => setDoc(entityRef, payload));
     return payload;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -366,11 +408,15 @@ export async function getOwnerEntities(ownerUid: string): Promise<EntityRecord[]
   const path = 'entities';
   try {
     const q = query(collection(db, 'entities'), where('ownerUid', '==', ownerUid));
-    const snapshot = await getDocs(q);
+    const snapshot = await withFirestoreRetry(() => getDocs(q));
     const entities: EntityRecord[] = [];
     snapshot.forEach(d => entities.push(d.data() as EntityRecord));
     return entities;
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      console.warn('getOwnerEntities transient error:', error);
+      return [];
+    }
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
@@ -379,11 +425,15 @@ export async function getOwnerEntities(ownerUid: string): Promise<EntityRecord[]
 export async function getAllEntities(): Promise<EntityRecord[]> {
   const path = 'entities';
   try {
-    const snapshot = await getDocs(collection(db, 'entities'));
+    const snapshot = await withFirestoreRetry(() => getDocs(collection(db, 'entities')));
     const entities: EntityRecord[] = [];
     snapshot.forEach(d => entities.push(d.data() as EntityRecord));
     return entities;
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      console.warn('getAllEntities transient error:', error);
+      return [];
+    }
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
@@ -393,29 +443,31 @@ export async function addStaffToEntity(entityId: string, mobileNumber: string): 
   const path = `entities/${entityId}`;
   try {
     const entityRef = doc(db, 'entities', entityId);
-    const snap = await getDoc(entityRef);
+    const snap = await withFirestoreRetry(() => getDoc(entityRef));
     if (!snap.exists()) return;
 
     const data = snap.data() as EntityRecord;
     const cleanMobile = mobileNumber.replace(/\D/g, '');
     if (!data.staffMobiles.includes(cleanMobile)) {
       const updatedMobiles = [...data.staffMobiles, cleanMobile];
-      await updateDoc(entityRef, {
+      await withFirestoreRetry(() => updateDoc(entityRef, {
         staffMobiles: updatedMobiles,
         updatedAt: new Date().toISOString()
-      });
+      }));
     }
 
     // Also upgrade any registered user matching this mobile number
     const usersCol = collection(db, 'users');
-    const allUsersSnap = await getDocs(usersCol);
-    allUsersSnap.forEach(async (uDoc) => {
-      const uData = uDoc.data() as UserProfile;
-      const uCleanMob = (uData.mobileNumber || '').replace(/\D/g, '');
-      if (uCleanMob && uCleanMob === cleanMobile && uData.role === 'Public Member') {
-        await updateDoc(doc(db, 'users', uDoc.id), { role: 'Staff' });
-      }
-    });
+    const allUsersSnap = await withFirestoreRetry(() => getDocs(usersCol)).catch(() => null);
+    if (allUsersSnap) {
+      allUsersSnap.forEach(async (uDoc) => {
+        const uData = uDoc.data() as UserProfile;
+        const uCleanMob = (uData.mobileNumber || '').replace(/\D/g, '');
+        if (uCleanMob && uCleanMob === cleanMobile && uData.role === 'Public Member') {
+          await withFirestoreRetry(() => updateDoc(doc(db, 'users', uDoc.id), { role: 'Staff' })).catch(() => {});
+        }
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -425,17 +477,17 @@ export async function removeStaffFromEntity(entityId: string, mobileNumber: stri
   const path = `entities/${entityId}`;
   try {
     const entityRef = doc(db, 'entities', entityId);
-    const snap = await getDoc(entityRef);
+    const snap = await withFirestoreRetry(() => getDoc(entityRef));
     if (!snap.exists()) return;
 
     const data = snap.data() as EntityRecord;
     const cleanMobile = mobileNumber.replace(/\D/g, '');
     const updatedMobiles = data.staffMobiles.filter(m => m !== cleanMobile);
 
-    await updateDoc(entityRef, {
+    await withFirestoreRetry(() => updateDoc(entityRef, {
       staffMobiles: updatedMobiles,
       updatedAt: new Date().toISOString()
-    });
+    }));
 
     // Check if this mobile is still staff in ANY other entity
     if (cleanMobile) {
@@ -443,15 +495,17 @@ export async function removeStaffFromEntity(entityId: string, mobileNumber: stri
       // If no other entity has this staff mobile, check if the registered user is 'Staff' and demote to 'Public Member'
       if (remainingStaffEntities.length === 0) {
         const usersCol = collection(db, 'users');
-        const allUsersSnap = await getDocs(usersCol);
-        for (const uDoc of allUsersSnap.docs) {
-          const uData = uDoc.data() as UserProfile;
-          const uCleanMob = (uData.mobileNumber || '').replace(/\D/g, '');
-          if (uCleanMob === cleanMobile && uData.role === 'Staff') {
-            await updateDoc(doc(db, 'users', uDoc.id), {
-              role: 'Public Member',
-              updatedAt: new Date().toISOString()
-            });
+        const allUsersSnap = await withFirestoreRetry(() => getDocs(usersCol)).catch(() => null);
+        if (allUsersSnap) {
+          for (const uDoc of allUsersSnap.docs) {
+            const uData = uDoc.data() as UserProfile;
+            const uCleanMob = (uData.mobileNumber || '').replace(/\D/g, '');
+            if (uCleanMob === cleanMobile && uData.role === 'Staff') {
+              await withFirestoreRetry(() => updateDoc(doc(db, 'users', uDoc.id), {
+                role: 'Public Member',
+                updatedAt: new Date().toISOString()
+              })).catch(() => {});
+            }
           }
         }
       }
@@ -467,11 +521,15 @@ export async function getStaffEntitiesForMobile(mobileNumber: string): Promise<E
     const cleanMobile = mobileNumber.replace(/\D/g, '');
     if (!cleanMobile) return [];
     const q = query(collection(db, 'entities'), where('staffMobiles', 'array-contains', cleanMobile));
-    const snapshot = await getDocs(q);
+    const snapshot = await withFirestoreRetry(() => getDocs(q));
     const entities: EntityRecord[] = [];
     snapshot.forEach(d => entities.push(d.data() as EntityRecord));
     return entities;
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      console.warn('getStaffEntitiesForMobile transient error:', error);
+      return [];
+    }
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
@@ -517,7 +575,7 @@ export async function addWorker(worker: Omit<WorkerRecord, 'id' | 'createdAt'>):
       comments: worker.comments || [],
       createdAt: new Date().toISOString()
     });
-    await setDoc(newDocRef, payload);
+    await withFirestoreRetry(() => setDoc(newDocRef, payload));
 
     // Save to local cache
     try {
@@ -547,7 +605,7 @@ export async function transferWorkerEntity(
   const path = `workers/${workerId}`;
   try {
     const workerRef = doc(db, 'workers', workerId);
-    const workerSnap = await getDoc(workerRef);
+    const workerSnap = await withFirestoreRetry(() => getDoc(workerRef));
     if (!workerSnap.exists()) {
       throw new Error('Worker not found');
     }
@@ -599,7 +657,7 @@ export async function transferWorkerEntity(
       updatedAt: new Date().toISOString()
     });
 
-    await updateDoc(workerRef, updates);
+    await withFirestoreRetry(() => updateDoc(workerRef, updates));
 
     const updatedWorker: WorkerRecord = {
       ...currentWorker,
@@ -643,7 +701,7 @@ export async function addWorkerComment(
   const path = `workers/${workerId}`;
   try {
     const workerRef = doc(db, 'workers', workerId);
-    const workerSnap = await getDoc(workerRef);
+    const workerSnap = await withFirestoreRetry(() => getDoc(workerRef));
     if (!workerSnap.exists()) {
       throw new Error('Worker record not found');
     }
@@ -662,10 +720,10 @@ export async function addWorkerComment(
     const existingComments = worker.comments || [];
     const updatedComments = [newComment, ...existingComments];
 
-    await updateDoc(workerRef, {
+    await withFirestoreRetry(() => updateDoc(workerRef, {
       comments: updatedComments,
       updatedAt: new Date().toISOString()
-    });
+    }));
 
     // Update local cache
     try {
@@ -691,16 +749,16 @@ export async function deleteWorkerComment(
   const path = `workers/${workerId}`;
   try {
     const workerRef = doc(db, 'workers', workerId);
-    const workerSnap = await getDoc(workerRef);
+    const workerSnap = await withFirestoreRetry(() => getDoc(workerRef));
     if (!workerSnap.exists()) return;
 
     const worker = workerSnap.data() as WorkerRecord;
     const updatedComments = (worker.comments || []).filter(c => c.id !== commentId);
 
-    await updateDoc(workerRef, {
+    await withFirestoreRetry(() => updateDoc(workerRef, {
       comments: updatedComments,
       updatedAt: new Date().toISOString()
-    });
+    }));
 
     // Update local cache
     try {
@@ -731,7 +789,7 @@ export async function logWorkerScan(
   const path = `workers/${workerId}`;
   try {
     const workerRef = doc(db, 'workers', workerId);
-    const workerSnap = await getDoc(workerRef);
+    const workerSnap = await withFirestoreRetry(() => getDoc(workerRef));
     if (!workerSnap.exists()) return;
 
     const worker = workerSnap.data() as WorkerRecord;
@@ -751,10 +809,10 @@ export async function logWorkerScan(
     const existingScanLogs = worker.scanLogs || [];
     const updatedScanLogs = [scanLog, ...existingScanLogs].slice(0, 50);
 
-    await updateDoc(workerRef, {
+    await withFirestoreRetry(() => updateDoc(workerRef, {
       scanLogs: updatedScanLogs,
       updatedAt: new Date().toISOString()
-    });
+    }));
 
     // Update local cache
     try {
@@ -781,7 +839,7 @@ export async function updateWorker(workerId: string, updates: Partial<WorkerReco
       photoURL: '',
       updatedAt: new Date().toISOString()
     });
-    await updateDoc(docRef, cleanedUpdates);
+    await withFirestoreRetry(() => updateDoc(docRef, cleanedUpdates));
 
     // Update local cache
     try {
@@ -810,6 +868,9 @@ export async function getWorkersForEntity(entityId: string): Promise<WorkerRecor
       w.roomEntityId === entityId
     );
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      return [];
+    }
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
@@ -818,7 +879,7 @@ export async function getWorkersForEntity(entityId: string): Promise<WorkerRecor
 export async function getAllWorkers(): Promise<WorkerRecord[]> {
   const path = 'workers';
   try {
-    const snapshot = await getDocs(collection(db, 'workers'));
+    const snapshot = await withFirestoreRetry(() => getDocs(collection(db, 'workers')));
     const workers: WorkerRecord[] = [];
     snapshot.forEach(d => {
       const data = d.data();
@@ -832,13 +893,16 @@ export async function getAllWorkers(): Promise<WorkerRecord[]> {
 
     return workers;
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    console.warn('getAllWorkers transient/fetch error, using cached data if available:', error);
     try {
       const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
       if (Array.isArray(cached)) {
         return cached;
       }
     } catch (e) {}
+    if (!isTransientFirestoreError(error)) {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
     return [];
   }
 }
@@ -847,7 +911,7 @@ export async function deleteWorker(workerId: string, currentUser: UserProfile): 
   const path = `workers/${workerId}`;
   try {
     const workerRef = doc(db, 'workers', workerId);
-    const workerSnap = await getDoc(workerRef);
+    const workerSnap = await withFirestoreRetry(() => getDoc(workerRef));
 
     if (workerSnap.exists()) {
       const worker = workerSnap.data() as WorkerRecord;
@@ -875,7 +939,7 @@ export async function deleteWorker(workerId: string, currentUser: UserProfile): 
         throw new Error('Unauthorized to delete this worker registration.');
       }
 
-      await deleteDoc(workerRef);
+      await withFirestoreRetry(() => deleteDoc(workerRef));
     }
 
     // Always cleanse local cache
@@ -913,7 +977,7 @@ export async function addComment(content: string, user: UserProfile): Promise<Co
       content,
       createdAt: new Date().toISOString()
     };
-    await setDoc(newDocRef, payload);
+    await withFirestoreRetry(() => setDoc(newDocRef, payload));
     return payload;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -924,12 +988,16 @@ export async function addComment(content: string, user: UserProfile): Promise<Co
 export async function getComments(): Promise<CommentRecord[]> {
   const path = 'comments';
   try {
-    const snapshot = await getDocs(collection(db, 'comments'));
+    const snapshot = await withFirestoreRetry(() => getDocs(collection(db, 'comments')));
     const comments: CommentRecord[] = [];
     snapshot.forEach(d => comments.push(d.data() as CommentRecord));
     // Sort by createdAt descending
     return comments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   } catch (error) {
+    if (isTransientFirestoreError(error)) {
+      console.warn('getComments transient error:', error);
+      return [];
+    }
     handleFirestoreError(error, OperationType.LIST, path);
     return [];
   }
@@ -939,10 +1007,10 @@ export async function updateComment(commentId: string, content: string): Promise
   const path = `comments/${commentId}`;
   try {
     const docRef = doc(db, 'comments', commentId);
-    await updateDoc(docRef, {
+    await withFirestoreRetry(() => updateDoc(docRef, {
       content,
       updatedAt: new Date().toISOString()
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -952,7 +1020,7 @@ export async function deleteComment(commentId: string): Promise<void> {
   const path = `comments/${commentId}`;
   try {
     const docRef = doc(db, 'comments', commentId);
-    await deleteDoc(docRef);
+    await withFirestoreRetry(() => deleteDoc(docRef));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }

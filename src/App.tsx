@@ -101,9 +101,26 @@ export default function App() {
       }
     });
 
+    // Handle tab visibility restore and online network restoration
+    const handleVisibilityOrOnline = () => {
+      if (document.visibilityState === 'visible' && auth.currentUser) {
+        // Silently reload user profile in background without showing full splash
+        getUserProfile(auth.currentUser.uid).then(profile => {
+          if (profile) {
+            setCurrentUser(prev => prev ? { ...prev, ...profile } : profile);
+          }
+        }).catch(() => {});
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrOnline);
+    window.addEventListener('online', handleVisibilityOrOnline);
+
     return () => {
       clearTimeout(splashTimer);
       unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
+      window.removeEventListener('online', handleVisibilityOrOnline);
     };
   }, []);
 
