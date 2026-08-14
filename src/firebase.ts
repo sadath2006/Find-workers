@@ -9,7 +9,8 @@ import {
   User 
 } from 'firebase/auth';
 import { 
-  getFirestore, 
+  initializeFirestore,
+  memoryLocalCache,
   doc, 
   getDoc, 
   setDoc, 
@@ -43,10 +44,30 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Official standard Firestore initialization using database ID from config
-export const db = firebaseConfig.firestoreDatabaseId 
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(app);
+// Initialize Firestore strictly with in-memory caching to eliminate any IndexedDB connection closing / lock / multi-tab issues
+export const db = initializeFirestore(
+  app,
+  {
+    localCache: memoryLocalCache(),
+    ignoreUndefinedProperties: true,
+  },
+  firebaseConfig.firestoreDatabaseId || undefined
+);
+
+// Silently clear any legacy/corrupted IndexedDB databases from prior versions
+if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
+  try {
+    if ('databases' in window.indexedDB && typeof window.indexedDB.databases === 'function') {
+      window.indexedDB.databases().then(dbs => {
+        dbs.forEach(d => {
+          if (d.name && d.name.startsWith('firestore')) {
+            try { window.indexedDB.deleteDatabase(d.name); } catch (_) {}
+          }
+        });
+      }).catch(() => {});
+    }
+  } catch (_) {}
+}
 
 enum OperationType {
   CREATE = 'create',
@@ -79,7 +100,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   };
   console.error('Firestore Error:', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  throw new Error(errMessage);
 }
 
 /**
@@ -99,6 +120,7 @@ function isTransientFirestoreError(error: any): boolean {
     msg.includes('timeout') ||
     msg.includes('aborted') ||
     msg.includes('failed to get document') ||
+    msg.includes('connection') ||
     code.includes('unavailable') ||
     code.includes('deadline-exceeded')
   );
@@ -107,7 +129,7 @@ function isTransientFirestoreError(error: any): boolean {
 /**
  * Executes a Firestore asynchronous operation with automatic retries on transient connection or closing errors.
  */
-async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 2, delayMs = 300): Promise<T> {
+async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 3, delayMs = 250): Promise<T> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -115,7 +137,7 @@ async function withFirestoreRetry<T>(fn: () => Promise<T>, maxRetries = 2, delay
     } catch (err) {
       lastError = err;
       if (attempt < maxRetries && isTransientFirestoreError(err)) {
-        await new Promise(res => setTimeout(res, delayMs * (attempt + 1)));
+        await new Promise(res => setTimeout(res, delayMs * Math.pow(1.5, attempt)));
         continue;
       }
       throw err;
