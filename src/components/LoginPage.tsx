@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Logo } from './Logo';
-import { loginWithGoogle } from '../firebase';
-import { ShieldCheck, Users, MapPin, AlertCircle, Loader2 } from 'lucide-react';
+import { loginWithGoogle, loginWithGoogleRedirect } from '../firebase';
+import { ShieldCheck, Users, MapPin, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
 
 interface LoginPageProps {
   onSuccess: () => void;
@@ -9,7 +9,7 @@ interface LoginPageProps {
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<{ message: string; isInfo?: boolean } | null>(null);
+  const [error, setError] = useState<{ message: string; isInfo?: boolean; isDomainError?: boolean } | null>(null);
 
   const handleGoogleLogin = async () => {
     setLoading(true);
@@ -18,24 +18,62 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
       await loginWithGoogle();
       onSuccess();
     } catch (err: any) {
+      console.warn('Google Sign-In caught:', err?.code, err?.message);
       if (err?.code === 'auth/popup-closed-by-user') {
         setError({
           message: 'Sign-in cancelled. Click "Sign in with Google" to try again.',
           isInfo: true,
         });
-      } else if (err?.code === 'auth/popup-blocked') {
+      } else if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/cancelled-popup-request') {
         setError({
-          message: 'Popup was blocked by your browser. Please allow popups for this site.',
+          message: 'Popup was blocked by your browser. Attempting direct redirect login...',
+          isInfo: true,
+        });
+        try {
+          await loginWithGoogleRedirect();
+        } catch (redirectErr: any) {
+          setError({
+            message: redirectErr?.message || 'Redirect sign-in failed.',
+            isInfo: false,
+          });
+        }
+      } else if (err?.code === 'auth/unauthorized-domain') {
+        const domain = typeof window !== 'undefined' ? window.location.hostname : 'your Vercel domain';
+        setError({
+          message: `Domain not authorized: "${domain}". In Firebase Console > Authentication > Settings > Authorized domains, please add "${domain}".`,
           isInfo: false,
+          isDomainError: true
         });
       } else {
-        console.error('Google Sign-In Error:', err);
         setError({
           message: err?.message || 'Failed to sign in with Google. Please try again.',
           isInfo: false,
         });
       }
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRedirectLogin = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await loginWithGoogleRedirect();
+    } catch (err: any) {
+      if (err?.code === 'auth/unauthorized-domain') {
+        const domain = typeof window !== 'undefined' ? window.location.hostname : 'your Vercel domain';
+        setError({
+          message: `Domain not authorized: "${domain}". In Firebase Console > Authentication > Settings > Authorized domains, please add "${domain}".`,
+          isInfo: false,
+          isDomainError: true
+        });
+      } else {
+        setError({
+          message: err?.message || 'Redirect sign-in failed. Please try again.',
+          isInfo: false,
+        });
+      }
       setLoading(false);
     }
   };
@@ -87,7 +125,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
 
         {error && (
           <div
-            className={`p-3 rounded-xl text-xs flex items-start space-x-2 animate-fadeIn border ${
+            className={`p-3.5 rounded-2xl text-xs flex items-start space-x-2.5 animate-fadeIn border ${
               error.isInfo
                 ? 'bg-amber-50 border-amber-200 text-amber-800'
                 : 'bg-rose-50 border-rose-200 text-rose-700'
@@ -98,8 +136,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
                 error.isInfo ? 'text-amber-600' : 'text-rose-500'
               }`}
             />
-            <div className="flex-1">
-              <span>{error.message}</span>
+            <div className="flex-1 space-y-1">
+              <p className="font-semibold">{error.message}</p>
+              {error.isDomainError && (
+                <p className="text-[11px] text-slate-600 leading-tight">
+                  Go to <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="underline font-bold text-rose-800 inline-flex items-center gap-0.5">Firebase Console <ExternalLink className="w-3 h-3" /></a> &gt; Auth &gt; Settings &gt; Authorized Domains and add this domain to allow login from Vercel.
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -140,6 +183,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
               <span className="text-sm font-bold text-slate-800">Sign in with Google</span>
             </>
           )}
+        </button>
+
+        {/* Alternative direct redirect option for mobile PWA standalone mode */}
+        <button
+          onClick={handleRedirectLogin}
+          disabled={loading}
+          className="w-full text-center text-xs text-slate-500 hover:text-slate-800 py-1 transition-colors underline cursor-pointer"
+        >
+          Having trouble? Try Direct Mobile / PWA Sign-In
         </button>
 
         <p className="text-[11px] text-center text-slate-400">

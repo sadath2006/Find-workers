@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v7';
+const CACHE_NAME = 'findmyworkers-v10-fresh';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -13,6 +13,7 @@ const ASSETS_TO_CACHE = [
 ];
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       for (const asset of ASSETS_TO_CACHE) {
@@ -22,7 +23,7 @@ self.addEventListener('install', (event) => {
           console.warn('Failed to cache static asset:', asset, err);
         }
       }
-    }).then(() => self.skipWaiting())
+    })
   );
 });
 
