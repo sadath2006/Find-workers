@@ -208,8 +208,12 @@ export const EntityManagementPanel: React.FC<EntityManagementPanelProps> = ({ cu
     setMsg(null);
     try {
       await removeStaffFromEntity(selectedEntity.id, mobile);
-      setMsg({ type: 'success', text: `Staff mobile ${mobile} removed.` });
-      const updatedList = await fetchCurrentRoleEntities();
+      setMsg({ type: 'success', text: `Staff mobile ${mobile} removed (demoted to Public Member if no other assignments).` });
+      const [allUserList, updatedList] = await Promise.all([
+        getAllUsers(),
+        fetchCurrentRoleEntities()
+      ]);
+      setUsers(allUserList);
       setEntities(updatedList);
       const updated = updatedList.find(e => e.id === selectedEntity.id);
       if (updated) setSelectedEntity(updated);

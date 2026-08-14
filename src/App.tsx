@@ -113,9 +113,10 @@ export default function App() {
     }
   };
 
-  const handleLoginSuccess = () => {
+  const handleLoginSuccess = async () => {
+    setScreen('splash');
     if (auth.currentUser) {
-      setScreen('splash');
+      await loadAndSetUserProfile(auth.currentUser);
     }
   };
 

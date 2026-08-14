@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v5';
+const CACHE_NAME = 'findmyworkers-v7';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -48,6 +48,22 @@ self.addEventListener('fetch', (event) => {
     event.request.url.includes('firestore') ||
     event.request.url.includes('firebase')
   ) {
+    return;
+  }
+
+  // Network-first for biometric neural net models to prevent tensor corruption from stale cache
+  if (event.request.url.includes('/models/')) {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(event.request))
+    );
     return;
   }
 

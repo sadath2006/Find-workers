@@ -21,7 +21,8 @@ import {
   Scan,
   Sparkles,
   ChevronRight,
-  UserCheck
+  UserCheck,
+  Clock
 } from 'lucide-react';
 
 interface WelcomeDashboardProps {
@@ -87,13 +88,14 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
           <div className="flex items-center justify-between">
             <RoleBadge role={user.role || 'Public Member'} size="md" />
 
-            {/* Quick Action Button depending on Role */}
-            {user.role === 'Public Member' && (
+            {/* Quick Action Button for non-Public roles in header box */}
+            {user.role !== 'Public Member' && (
               <button
                 onClick={() => setShowFaceScanModal(true)}
-                className="py-1 px-2.5 bg-white/20 hover:bg-white/30 text-white rounded-full text-[11px] font-bold border border-white/30 backdrop-blur-md flex items-center space-x-1 cursor-pointer transition-all"
+                className="py-1.5 px-3 bg-white/20 hover:bg-white/30 text-white rounded-full text-xs font-bold border border-white/30 backdrop-blur-md flex items-center space-x-1.5 cursor-pointer transition-all shadow-sm active:scale-95"
+                title="Biometric Face Scanner"
               >
-                <Scan className="w-3 h-3" />
+                <Scan className="w-3.5 h-3.5" />
                 <span>Face Scan</span>
               </button>
             )}
@@ -145,6 +147,34 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Public Member - Pending Activation Notice */}
+        {user.role === 'Public Member' && !user.isApproved && (
+          <div className="p-5 rounded-3xl bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-slate-900 border-2 border-amber-500/40 text-slate-800 space-y-3 shadow-lg">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-500 border border-amber-500/40 shrink-0">
+                <Clock className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black text-amber-500 uppercase tracking-tight">
+                  Account Activation Pending
+                </h3>
+                <p className="text-xs text-slate-600 font-medium mt-0.5">
+                  Approval required by Administrator
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed bg-white/60 p-3 rounded-2xl border border-slate-200">
+              Welcome to the Find My Workers Network. Your public member registration is currently awaiting verification and approval by a Founder, Super Admin, or Committee member.
+            </p>
+
+            <div className="text-[11px] text-slate-500 flex items-center space-x-2 pt-1 font-medium">
+              <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping shrink-0" />
+              <span>Features, live scanning, and verification tools will activate automatically once approved.</span>
+            </div>
+          </div>
+        )}
 
         {/* Role Action Dashboards */}
         <div className="space-y-3">
@@ -226,8 +256,42 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
           )}
         </div>
 
-        {/* Member Forum & Comments Section */}
-        <CommentsSection currentUser={user} />
+        {/* Public Member - Big Main Face Scan Action Button Placed Above Chat */}
+        {user.role === 'Public Member' && user.isApproved && (
+          <div className="pt-1">
+            <button
+              onClick={() => setShowFaceScanModal(true)}
+              className="w-full p-5 rounded-3xl bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white shadow-xl shadow-red-600/30 flex items-center justify-between transition-all transform hover:-translate-y-0.5 active:translate-y-0 cursor-pointer border-2 border-red-400/50 group"
+            >
+              <div className="flex items-center space-x-4">
+                <div className="w-14 h-14 rounded-2xl bg-white/20 backdrop-blur-md text-white border border-white/40 flex items-center justify-center shrink-0 shadow-lg group-hover:scale-105 transition-transform">
+                  <Scan className="w-8 h-8 animate-pulse text-white" />
+                </div>
+                <div className="text-left">
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-base font-black text-white tracking-wide">
+                      BIOMETRIC FACE SCAN
+                    </h3>
+                    <span className="text-[9px] bg-white text-red-700 font-extrabold px-2 py-0.5 rounded-full uppercase shadow-sm">
+                      Active
+                    </span>
+                  </div>
+                  <p className="text-xs text-red-100 font-medium mt-1">
+                    ഫേസ് സ്കാൻ ചെയ്യുക • Live Camera & Gallery Matcher
+                  </p>
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center text-white group-hover:bg-white group-hover:text-red-600 transition-colors shrink-0">
+                <ChevronRight className="w-6 h-6" />
+              </div>
+            </button>
+          </div>
+        )}
+
+        {/* Member Forum & Comments Section (Only for approved or non-public roles) */}
+        {(user.role !== 'Public Member' || user.isApproved) && (
+          <CommentsSection currentUser={user} />
+        )}
       </main>
 
       {/* User Management Modal */}
@@ -254,7 +318,7 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
         <FaceScannerModal
           isOpen={showFaceScanModal}
           onClose={() => setShowFaceScanModal(false)}
-          userName={user.displayName}
+          currentUser={user}
         />
       )}
 

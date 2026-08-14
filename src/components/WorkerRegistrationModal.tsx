@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, EntityRecord, WorkerRecord } from '../types';
-import { addWorker, updateWorker, getAllWorkers, getOwnerEntities, getAllEntities, getStaffEntitiesForMobile } from '../firebase';
+import { addWorker, updateWorker, transferWorkerEntity, getAllWorkers, getOwnerEntities, getAllEntities, getStaffEntitiesForMobile } from '../firebase';
 import { 
   extractArcFaceEmbedding, 
   extractMultipleArcFaceEmbeddings, 
@@ -234,13 +234,13 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
       try {
         const video = videoRef.current;
         const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth || 480;
-        canvas.height = video.videoHeight || 640;
+        canvas.width = 320;
+        canvas.height = Math.round((320 * (video.videoHeight || 640)) / (video.videoWidth || 480));
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.80);
+        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.70);
 
         const vector = await extractArcFaceEmbedding(frameDataUrl);
         if (!vector) {
@@ -251,7 +251,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
         const allWorkers = workersCacheRef.current;
         
         if (allWorkers && allWorkers.length > 0) {
-          const matchResult = await verifyArcFaceDuplicateFaiss(vector, frameDataUrl, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
+          const matchResult = await verifyArcFaceDuplicateFaiss(vector, undefined, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
           if (matchResult.duplicateFound && matchResult.matchedWorkerId) {
             const matchedWorker = allWorkers.find(w => w.id === matchResult.matchedWorkerId);
             if (matchedWorker) {
@@ -285,19 +285,19 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
         isScanningFrameRef.current = false;
         setLiveScanning(false);
       }
-    }, 200);
+    }, 350);
   };
 
   // Capture Photo from Camera
   const capturePhotoFromCamera = () => {
     if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth || 480;
-    canvas.height = videoRef.current.videoHeight || 640;
+    canvas.width = 360;
+    canvas.height = Math.round((360 * (videoRef.current.videoHeight || 640)) / (videoRef.current.videoWidth || 480));
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
       stopCamera();
       processImageForFaceMatch(dataUrl);
     }
@@ -319,7 +319,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
 
   // Process image & match face against FAISS vector database
   const processImageForFaceMatch = async (rawDataUrl: string) => {
-    const dataUrl = await compressImage(rawDataUrl, 360, 360, 0.72);
+    const dataUrl = await compressImage(rawDataUrl, 480, 480, 0.85);
     setPhotoDataUrl(dataUrl);
     setScanningFace(true);
     setDuplicateMatch(null);
@@ -330,8 +330,8 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
       const allWorkers = await getAllWorkers();
       console.log(`Fetched ${allWorkers.length} workers from Firestore for FAISS duplicate check`);
 
-      // Execute full mandatory face recognition pipeline (Threshold = DEFAULT_BIOMETRIC_THRESHOLD)
-      const pipelineResult = await runFaceRecognitionPipeline(rawDataUrl, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
+      // Execute full mandatory face recognition pipeline on optimized image (Threshold = DEFAULT_BIOMETRIC_THRESHOLD)
+      const pipelineResult = await runFaceRecognitionPipeline(dataUrl, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
       setPipelineDebug(pipelineResult);
       setFaceVector(pipelineResult.embedding || []);
 
@@ -383,29 +383,21 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
 
     try {
       const existing = duplicateMatch.worker;
-      const updates: Partial<WorkerRecord> = {};
+      const targetResidentType = isRoomContext ? 'Room' : (residentType || 'Company');
+      const targetRoom = isRoomContext ? activeEntity : null;
 
-      if (isCompanyContext) {
-        updates.companyEntityId = activeEntity.id;
-        updates.companyEntityName = activeEntity.name;
-        updates.residentType = residentType;
-      } else if (isRoomContext) {
-        updates.roomEntityId = activeEntity.id;
-        updates.roomEntityName = activeEntity.name;
-        updates.residentType = 'Room';
-      }
-
-      // Preserve primary entityId if empty
-      if (!existing.entityId) {
-        updates.entityId = activeEntity.id;
-        updates.entityName = activeEntity.name;
-      }
-
-      await updateWorker(existing.id, updates);
+      await transferWorkerEntity(
+        existing.id,
+        activeEntity,
+        targetResidentType,
+        targetRoom,
+        currentUser,
+        `Transferred / linked to ${activeEntity.name} after biometric duplicate match by ${currentUser.displayName}`
+      );
 
       setMsg({ 
         type: 'success', 
-        text: `Successfully linked ${existing.name} to ${activeEntity.name}!` 
+        text: `Successfully transferred & linked ${existing.name} to ${activeEntity.name}!` 
       });
 
       setTimeout(() => {

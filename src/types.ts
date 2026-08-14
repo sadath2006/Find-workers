@@ -37,6 +37,42 @@ export interface EntityRecord {
   updatedAt: string;
 }
 
+export interface WorkerTransferLog {
+  id: string;
+  timestamp: string;
+  actionType: 'created' | 'transferred' | 'room_updated' | 'company_updated';
+  fromCompany?: string;
+  toCompany?: string;
+  fromRoom?: string;
+  toRoom?: string;
+  transferredByUid: string;
+  transferredByName: string;
+  transferredByRole: string;
+  notes?: string;
+}
+
+export interface WorkerScanLog {
+  id: string;
+  timestamp: string;
+  scannedByUid: string;
+  scannedByName: string;
+  scannedByRole: string;
+  scannedByMobile?: string;
+  method: 'camera' | 'upload';
+  similarityScore: number;
+  confidence: number;
+}
+
+export interface WorkerComment {
+  id: string;
+  authorUid: string;
+  authorName: string;
+  authorPhoto?: string;
+  authorRole?: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface WorkerRecord {
   id: string;
   entityId: string;
@@ -56,6 +92,10 @@ export interface WorkerRecord {
   registeredByUid: string;
   registeredByName: string;
   registeredByRole?: string;
+  registeredByEmail?: string;
+  transferLogs?: WorkerTransferLog[];
+  scanLogs?: WorkerScanLog[];
+  comments?: WorkerComment[];
   createdAt: string;
   updatedAt?: string;
 }

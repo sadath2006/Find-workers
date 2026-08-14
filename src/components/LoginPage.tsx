@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Logo } from './Logo';
-import { loginWithGoogle, loginWithGoogleRedirect } from '../firebase';
-import { ShieldCheck, Users, MapPin, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
+import { loginWithGoogle } from '../firebase';
+import { ShieldCheck, Users, MapPin, AlertCircle, Loader2 } from 'lucide-react';
 
 interface LoginPageProps {
   onSuccess: () => void;
@@ -9,7 +9,6 @@ interface LoginPageProps {
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
   const [loading, setLoading] = useState(false);
-  const [redirecting, setRedirecting] = useState(false);
   const [error, setError] = useState<{ message: string; isInfo?: boolean } | null>(null);
 
   const handleGoogleLogin = async () => {
@@ -19,23 +18,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
       await loginWithGoogle();
       onSuccess();
     } catch (err: any) {
-      const errMsg = err?.message || String(err);
       if (err?.code === 'auth/popup-closed-by-user') {
         setError({
-          message: 'Sign-in was cancelled. Click "Sign in with Google" to try again.',
+          message: 'Sign-in cancelled. Click "Sign in with Google" to try again.',
           isInfo: true,
         });
-      } else if (
-        err?.code === 'auth/popup-blocked' || 
-        errMsg.toLowerCase().includes('closing') || 
-        errMsg.toLowerCase().includes('hidden')
-      ) {
+      } else if (err?.code === 'auth/popup-blocked') {
         setError({
-          message: 'Redirecting to Google sign-in...',
-          isInfo: true,
+          message: 'Popup was blocked by your browser. Please allow popups for this site.',
+          isInfo: false,
         });
-        setRedirecting(true);
-        await loginWithGoogleRedirect();
       } else {
         console.error('Google Sign-In Error:', err);
         setError({
@@ -45,21 +37,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
       }
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleDirectRedirect = async () => {
-    setRedirecting(true);
-    setError(null);
-    try {
-      await loginWithGoogleRedirect();
-    } catch (err: any) {
-      console.error('Redirect Sign-In Error:', err);
-      setError({
-        message: err?.message || 'Failed to redirect to Google. Please try again.',
-        isInfo: false,
-      });
-      setRedirecting(false);
     }
   };
 
@@ -132,13 +109,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
       <div className="p-6 pt-2 pb-8 space-y-3">
         <button
           onClick={handleGoogleLogin}
-          disabled={loading || redirecting}
+          disabled={loading}
           className="w-full bg-white text-slate-800 font-bold py-3.5 px-4 rounded-xl flex items-center justify-center space-x-3 shadow-md hover:bg-slate-50 border border-slate-200 transition-all disabled:opacity-60 cursor-pointer active:scale-[0.98]"
         >
           {loading ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin text-red-600" />
-              <span className="text-sm font-semibold">Opening Google Sign-In...</span>
+              <span className="text-sm font-semibold">Connecting to Google...</span>
             </>
           ) : (
             <>
@@ -161,25 +138,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
                 />
               </svg>
               <span className="text-sm font-bold text-slate-800">Sign in with Google</span>
-            </>
-          )}
-        </button>
-
-        {/* Fallback button for Mobile/PWA standalone users if popup is blocked */}
-        <button
-          onClick={handleDirectRedirect}
-          disabled={loading || redirecting}
-          className="w-full py-2.5 px-3 rounded-lg text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 flex items-center justify-center space-x-1.5 transition-colors cursor-pointer"
-        >
-          {redirecting ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500" />
-              <span>Redirecting to Google...</span>
-            </>
-          ) : (
-            <>
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Trouble signing in? Use full-screen redirect</span>
             </>
           )}
         </button>

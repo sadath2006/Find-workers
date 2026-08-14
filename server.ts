@@ -110,11 +110,128 @@ async function startServer() {
 
   function isLegacyCorruptedVector(vec: number[]): boolean {
     if (!vec || !Array.isArray(vec) || vec.length !== 512) return true;
-    let totalQuadrantDiff = 0;
-    for (let i = 0; i < 128; i++) {
-      totalQuadrantDiff += Math.abs(vec[i] - vec[i + 128]) + Math.abs(vec[i] - vec[i + 256]);
+    let sumSq = 0;
+    for (let i = 0; i < 512; i++) {
+      const val = vec[i];
+      if (typeof val !== "number" || isNaN(val)) return true;
+      sumSq += val * val;
     }
-    return totalQuadrantDiff > 0.01;
+    return sumSq < 0.05;
+  }
+
+  function normalizeL2(vec: number[]): number[] {
+    let sumSq = 0;
+    for (let i = 0; i < vec.length; i++) sumSq += vec[i] * vec[i];
+    const norm = Math.sqrt(sumSq) || 1.0;
+    return vec.map(v => v / norm);
+  }
+
+  function projectToArcFace512D(descriptor: number[]): number[] {
+    const norm128 = Math.sqrt(descriptor.reduce((acc, val) => acc + val * val, 0)) || 1.0;
+    const u = descriptor.map(val => val / norm128);
+    const raw512 = new Array(512);
+    for (let i = 0; i < 512; i++) {
+      raw512[i] = u[i % 128] * 0.5;
+    }
+    return raw512;
+  }
+
+  function parseCandidateArray(val: any): number[] | null {
+    if (!val) return null;
+    if (Array.isArray(val)) {
+      const nums = val.map(Number).filter(n => typeof n === "number" && !isNaN(n));
+      return nums.length > 0 ? nums : null;
+    }
+    if (typeof val === "string") {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) {
+          const nums = parsed.map(Number).filter(n => typeof n === "number" && !isNaN(n));
+          if (nums.length > 0) return nums;
+        }
+      } catch {
+        const parts = val.split(",").map(Number).filter(n => !isNaN(n));
+        if (parts.length > 0) return parts;
+      }
+    }
+    if (typeof val === "object") {
+      const keys = Object.keys(val);
+      if (keys.length >= 128) {
+        const nums: number[] = [];
+        for (let i = 0; i < keys.length; i++) {
+          const num = Number(val[i]);
+          if (isNaN(num)) break;
+          nums.push(num);
+        }
+        if (nums.length >= 128) return nums;
+      }
+    }
+    return null;
+  }
+
+  function parseWorkerVectors(w: any): number[][] {
+    const vectors: number[][] = [];
+    if (!w) return vectors;
+
+    const rawCandidates: any[] = [
+      w.faceEmbedding,
+      w.faceEmbeddings,
+      w.faceVector,
+      w.faceVectors,
+      w.embedding,
+      w.embeddings,
+      w.vector,
+      w.vectors,
+      w.arcfaceEmbeddings,
+      w.arcfaceEmbedding,
+      w.descriptor,
+      w.descriptors,
+      w.faceDescriptor,
+      w.faceDescriptors,
+      w.biometricVector,
+      w.biometricVectors,
+      w.biometrics
+    ];
+
+    const addVector = (nums: number[]) => {
+      if (nums.length === 512) {
+        const normalized = normalizeL2(nums);
+        if (!isLegacyCorruptedVector(normalized)) {
+          vectors.push(normalized);
+        }
+      } else if (nums.length === 128) {
+        const proj512 = projectToArcFace512D(nums);
+        if (!isLegacyCorruptedVector(proj512)) {
+          vectors.push(proj512);
+        }
+      }
+    };
+
+    for (const item of rawCandidates) {
+      if (!item) continue;
+      if (Array.isArray(item) && item.length > 0) {
+        if (typeof item[0] === "number") {
+          const parsed = parseCandidateArray(item);
+          if (parsed) addVector(parsed);
+        } else {
+          for (const sub of item) {
+            if (sub && typeof sub === "object" && !Array.isArray(sub)) {
+              const innerVec = sub.vector || sub.embedding || sub.faceEmbedding || sub.descriptor || sub;
+              const parsed = parseCandidateArray(innerVec);
+              if (parsed) addVector(parsed);
+            } else {
+              const parsed = parseCandidateArray(sub);
+              if (parsed) addVector(parsed);
+            }
+          }
+        }
+      } else {
+        const parsed = parseCandidateArray(item);
+        if (parsed) addVector(parsed);
+      }
+    }
+
+    return vectors;
   }
 
   // FAISS Sync Endpoint: Syncs/Rebuilds FAISS Index with 512D ArcFace embeddings from Firestore
@@ -125,13 +242,6 @@ async function startServer() {
         return res.status(400).json({ error: "workers array required" });
       }
 
-      // Sync to Python FastAPI microservice
-      fetch("http://127.0.0.1:8000/sync-faiss", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workers })
-      }).catch((err) => console.warn("Failed to sync to Python FAISS:", err?.message || err));
-
       const records: Array<{ id: string; vector: number[] }> = [];
       workerMetadataStore.clear();
 
@@ -139,17 +249,9 @@ async function startServer() {
         if (!w.id) continue;
         workerMetadataStore.set(w.id, { id: w.id, name: w.name, entityName: w.entityName });
 
-        // Multi-photo ArcFace embeddings
-        if (Array.isArray(w.arcfaceEmbeddings) && w.arcfaceEmbeddings.length > 0) {
-          for (const vec of w.arcfaceEmbeddings) {
-            if (Array.isArray(vec) && vec.length === 512 && !isLegacyCorruptedVector(vec)) {
-              records.push({ id: w.id, vector: vec });
-            }
-          }
-        } 
-        // Single ArcFace embedding
-        else if (Array.isArray(w.faceEmbedding) && w.faceEmbedding.length === 512 && !isLegacyCorruptedVector(w.faceEmbedding)) {
-          records.push({ id: w.id, vector: w.faceEmbedding });
+        const vecs = parseWorkerVectors(w);
+        for (const vec of vecs) {
+          records.push({ id: w.id, vector: vec });
         }
       }
 
@@ -170,7 +272,7 @@ async function startServer() {
   // FAISS Vector Similarity Search & Duplicate Detection Endpoint
   app.post("/api/face/faiss-search", (req, res) => {
     try {
-      const { embedding, embeddings, threshold = 0.925, topK = 1 } = req.body;
+      const { embedding, embeddings, threshold = 0.90, topK = 1 } = req.body;
 
       const queryVectors: number[][] = [];
       if (Array.isArray(embedding) && embedding.length === 512) {
@@ -224,23 +326,26 @@ async function startServer() {
       }
 
       const similarity = bestMatch.similarity; // Cosine similarity (-1 to 1)
-      const isDuplicate = similarity >= threshold;
-      
-      // Calculate calibrated Euclidean distance and Biometric confidence percentage
       const euclideanDist = similarity > 0 ? Math.sqrt(Math.max(0, 2 - 2 * similarity)) : 999;
+      
       let similarityPercentage = 0;
-      if (euclideanDist <= 0.15) {
+      if (euclideanDist <= 0.20) {
         similarityPercentage = 99;
-      } else if (euclideanDist <= 0.39) {
-        similarityPercentage = Math.round(98 - ((euclideanDist - 0.15) / 0.24) * 18);
+      } else if (euclideanDist <= 0.32) {
+        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.12) * 4);
+      } else if (euclideanDist <= 0.44) {
+        similarityPercentage = Math.round(94 - ((euclideanDist - 0.32) / 0.12) * 9);
       } else if (euclideanDist <= 0.55) {
-        similarityPercentage = Math.round(55 - ((euclideanDist - 0.39) / 0.16) * 35);
+        similarityPercentage = Math.round(65 - ((euclideanDist - 0.44) / 0.11) * 25);
       } else if (euclideanDist <= 0.70) {
-        similarityPercentage = Math.round(19 - ((euclideanDist - 0.55) / 0.15) * 14);
+        similarityPercentage = Math.round(39 - ((euclideanDist - 0.55) / 0.15) * 23);
+      } else if (euclideanDist <= 0.95) {
+        similarityPercentage = Math.round(15 - ((euclideanDist - 0.70) / 0.25) * 15);
       } else {
         similarityPercentage = 0;
       }
 
+      const isDuplicate = similarity >= threshold && similarityPercentage >= 85 && !isNaN(euclideanDist) && !!bestMatch.id;
       const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
 
       return res.json({
@@ -249,8 +354,8 @@ async function startServer() {
         matchedWorkerId: isDuplicate ? bestMatch.id : null,
         matchedWorker: isDuplicate ? workerMeta : null,
         similarityScore: similarityPercentage,
-        cosineSimilarity: similarity,
-        euclideanDistance: euclideanDist,
+        cosineSimilarity: Number(similarity.toFixed(3)),
+        euclideanDistance: Number(euclideanDist.toFixed(3)),
         thresholdUsed: threshold,
         topMatchId: bestMatch.id
       });

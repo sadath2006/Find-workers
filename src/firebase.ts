@@ -31,6 +31,9 @@ import {
   EntityRecord, 
   WorkerRecord, 
   CommentRecord, 
+  WorkerTransferLog,
+  WorkerScanLog,
+  WorkerComment,
   FOUNDER_EMAIL 
 } from './types';
 import { compressImage } from './utils/imageCompressor';
@@ -91,18 +94,8 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 
 // Auth Helpers
 export async function loginWithGoogle(): Promise<User> {
-  try {
-    const result = await signInWithPopup(auth, googleProvider);
-    return result.user;
-  } catch (err: any) {
-    if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/cancelled-popup-request') {
-      console.log('Popup blocked or cancelled, initiating redirect flow...');
-      await signInWithRedirect(auth, googleProvider);
-      // Wait indefinitely while page redirects
-      return new Promise(() => {});
-    }
-    throw err;
-  }
+  const result = await signInWithPopup(auth, googleProvider);
+  return result.user;
 }
 
 export async function loginWithGoogleRedirect(): Promise<void> {
@@ -284,10 +277,28 @@ export async function updateUserRole(
     }
 
     const userDocRef = doc(db, 'users', targetUid);
+    const userSnap = await getDoc(userDocRef);
+    const userData = userSnap.exists() ? (userSnap.data() as UserProfile) : null;
+
     await updateDoc(userDocRef, {
       role: newRole,
       updatedAt: new Date().toISOString()
     });
+
+    // If role changed to Public Member, remove staff assignment from all entities
+    if (newRole === 'Public Member' && userData?.mobileNumber) {
+      const cleanMobile = userData.mobileNumber.replace(/\D/g, '');
+      if (cleanMobile) {
+        const staffEntities = await getStaffEntitiesForMobile(cleanMobile);
+        for (const ent of staffEntities) {
+          const updatedMobiles = (ent.staffMobiles || []).filter(m => m !== cleanMobile);
+          await updateDoc(doc(db, 'entities', ent.id), {
+            staffMobiles: updatedMobiles,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -425,6 +436,26 @@ export async function removeStaffFromEntity(entityId: string, mobileNumber: stri
       staffMobiles: updatedMobiles,
       updatedAt: new Date().toISOString()
     });
+
+    // Check if this mobile is still staff in ANY other entity
+    if (cleanMobile) {
+      const remainingStaffEntities = await getStaffEntitiesForMobile(cleanMobile);
+      // If no other entity has this staff mobile, check if the registered user is 'Staff' and demote to 'Public Member'
+      if (remainingStaffEntities.length === 0) {
+        const usersCol = collection(db, 'users');
+        const allUsersSnap = await getDocs(usersCol);
+        for (const uDoc of allUsersSnap.docs) {
+          const uData = uDoc.data() as UserProfile;
+          const uCleanMob = (uData.mobileNumber || '').replace(/\D/g, '');
+          if (uCleanMob === cleanMobile && uData.role === 'Staff') {
+            await updateDoc(doc(db, 'users', uDoc.id), {
+              role: 'Public Member',
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      }
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -462,18 +493,280 @@ export async function addWorker(worker: Omit<WorkerRecord, 'id' | 'createdAt'>):
   try {
     const newDocRef = doc(collection(db, 'workers'));
 
+    const initialTransferLog: WorkerTransferLog = {
+      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      timestamp: new Date().toISOString(),
+      actionType: 'created',
+      fromCompany: 'None',
+      toCompany: worker.companyEntityName || worker.entityName || 'Not Assigned',
+      fromRoom: 'None',
+      toRoom: worker.roomEntityName || 'Not Assigned',
+      transferredByUid: worker.registeredByUid,
+      transferredByName: worker.registeredByName,
+      transferredByRole: worker.registeredByRole || 'Registrar',
+      notes: 'Initial worker registration'
+    };
+
     // As requested: Do NOT store photo in database. Store empty photoURL; only faceEmbedding vector is saved to Firestore.
     const payload: WorkerRecord = sanitizePayload({
       ...worker,
       photoURL: '',
       id: newDocRef.id,
+      transferLogs: worker.transferLogs && worker.transferLogs.length > 0 ? worker.transferLogs : [initialTransferLog],
+      scanLogs: worker.scanLogs || [],
+      comments: worker.comments || [],
       createdAt: new Date().toISOString()
     });
     await setDoc(newDocRef, payload);
+
+    // Save to local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const filtered = cached.filter((w: any) => w.id !== payload.id);
+      filtered.push(payload);
+      localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(filtered));
+    } catch (e) {
+      // Local storage fallback
+    }
+
     return payload;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
     throw error;
+  }
+}
+
+export async function transferWorkerEntity(
+  workerId: string,
+  targetEntity: EntityRecord,
+  residentType: 'Company' | 'Outliving' | 'Room',
+  roomEntity: EntityRecord | null,
+  currentUser: UserProfile,
+  notes?: string
+): Promise<WorkerRecord> {
+  const path = `workers/${workerId}`;
+  try {
+    const workerRef = doc(db, 'workers', workerId);
+    const workerSnap = await getDoc(workerRef);
+    if (!workerSnap.exists()) {
+      throw new Error('Worker not found');
+    }
+    const currentWorker = workerSnap.data() as WorkerRecord;
+
+    const isCompany = targetEntity.type === 'Company';
+    const isRoom = targetEntity.type === 'Room';
+
+    const newCompanyEntityId = isCompany ? targetEntity.id : (currentWorker.companyEntityId || '');
+    const newCompanyEntityName = isCompany ? targetEntity.name : (currentWorker.companyEntityName || 'Not Assigned');
+
+    const newRoomEntityId = isRoom 
+      ? targetEntity.id 
+      : (roomEntity ? roomEntity.id : (residentType === 'Company' && isCompany ? targetEntity.id : ''));
+    const newRoomEntityName = isRoom 
+      ? targetEntity.name 
+      : (roomEntity ? roomEntity.name : (residentType === 'Company' && isCompany ? targetEntity.name : 'Not Assigned'));
+
+    const newTransferLog: WorkerTransferLog = {
+      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      timestamp: new Date().toISOString(),
+      actionType: 'transferred',
+      fromCompany: currentWorker.companyEntityName || currentWorker.entityName || 'None',
+      toCompany: newCompanyEntityName,
+      fromRoom: currentWorker.roomEntityName || 'None',
+      toRoom: newRoomEntityName,
+      transferredByUid: currentUser.uid,
+      transferredByName: currentUser.displayName,
+      transferredByRole: currentUser.role,
+      notes: notes || `Transferred to ${targetEntity.name} (${targetEntity.type}) by ${currentUser.displayName}`
+    };
+
+    const existingTransferLogs = currentWorker.transferLogs || [];
+    const updatedTransferLogs = [newTransferLog, ...existingTransferLogs];
+
+    const updates: Partial<WorkerRecord> = sanitizePayload({
+      entityId: targetEntity.id,
+      entityName: targetEntity.name,
+      companyEntityId: newCompanyEntityId,
+      companyEntityName: newCompanyEntityName,
+      residentType: residentType || currentWorker.residentType || 'Company',
+      roomEntityId: newRoomEntityId,
+      roomEntityName: newRoomEntityName,
+      registeredByUid: currentUser.uid,
+      registeredByName: currentUser.displayName,
+      registeredByRole: currentUser.role,
+      registeredByEmail: currentUser.email,
+      transferLogs: updatedTransferLogs,
+      updatedAt: new Date().toISOString()
+    });
+
+    await updateDoc(workerRef, updates);
+
+    const updatedWorker: WorkerRecord = {
+      ...currentWorker,
+      ...updates
+    };
+
+    // Update local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const index = cached.findIndex((w: any) => w.id === workerId);
+      if (index >= 0) {
+        cached[index] = { ...cached[index], ...updates };
+      } else {
+        cached.push(updatedWorker);
+      }
+      localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(cached));
+    } catch (e) {}
+
+    // Synchronize server-side FAISS
+    try {
+      const allWorkers = await getAllWorkers();
+      fetch('/api/face/faiss-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workers: allWorkers })
+      }).catch(() => {});
+    } catch (e) {}
+
+    return updatedWorker;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+    throw error;
+  }
+}
+
+export async function addWorkerComment(
+  workerId: string,
+  content: string,
+  currentUser: UserProfile
+): Promise<WorkerComment> {
+  const path = `workers/${workerId}`;
+  try {
+    const workerRef = doc(db, 'workers', workerId);
+    const workerSnap = await getDoc(workerRef);
+    if (!workerSnap.exists()) {
+      throw new Error('Worker record not found');
+    }
+    const worker = workerSnap.data() as WorkerRecord;
+
+    const newComment: WorkerComment = {
+      id: 'wc_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      authorUid: currentUser.uid,
+      authorName: currentUser.displayName,
+      authorPhoto: currentUser.photoURL || '',
+      authorRole: currentUser.role,
+      content: content.trim(),
+      createdAt: new Date().toISOString()
+    };
+
+    const existingComments = worker.comments || [];
+    const updatedComments = [newComment, ...existingComments];
+
+    await updateDoc(workerRef, {
+      comments: updatedComments,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Update local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const idx = cached.findIndex((w: any) => w.id === workerId);
+      if (idx >= 0) {
+        cached[idx].comments = updatedComments;
+        localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(cached));
+      }
+    } catch (e) {}
+
+    return newComment;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+    throw error;
+  }
+}
+
+export async function deleteWorkerComment(
+  workerId: string,
+  commentId: string
+): Promise<void> {
+  const path = `workers/${workerId}`;
+  try {
+    const workerRef = doc(db, 'workers', workerId);
+    const workerSnap = await getDoc(workerRef);
+    if (!workerSnap.exists()) return;
+
+    const worker = workerSnap.data() as WorkerRecord;
+    const updatedComments = (worker.comments || []).filter(c => c.id !== commentId);
+
+    await updateDoc(workerRef, {
+      comments: updatedComments,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Update local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const idx = cached.findIndex((w: any) => w.id === workerId);
+      if (idx >= 0) {
+        cached[idx].comments = updatedComments;
+        localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(cached));
+      }
+    } catch (e) {}
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function logWorkerScan(
+  workerId: string,
+  scanData: {
+    scannedByUid: string;
+    scannedByName: string;
+    scannedByRole: string;
+    scannedByMobile?: string;
+    method: 'camera' | 'upload';
+    similarityScore: number;
+    confidence: number;
+  }
+): Promise<void> {
+  const path = `workers/${workerId}`;
+  try {
+    const workerRef = doc(db, 'workers', workerId);
+    const workerSnap = await getDoc(workerRef);
+    if (!workerSnap.exists()) return;
+
+    const worker = workerSnap.data() as WorkerRecord;
+
+    const scanLog: WorkerScanLog = {
+      id: 'scan_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      timestamp: new Date().toISOString(),
+      scannedByUid: scanData.scannedByUid,
+      scannedByName: scanData.scannedByName,
+      scannedByRole: scanData.scannedByRole,
+      scannedByMobile: scanData.scannedByMobile || '',
+      method: scanData.method,
+      similarityScore: scanData.similarityScore,
+      confidence: scanData.confidence
+    };
+
+    const existingScanLogs = worker.scanLogs || [];
+    const updatedScanLogs = [scanLog, ...existingScanLogs].slice(0, 50);
+
+    await updateDoc(workerRef, {
+      scanLogs: updatedScanLogs,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Update local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const idx = cached.findIndex((w: any) => w.id === workerId);
+      if (idx >= 0) {
+        cached[idx].scanLogs = updatedScanLogs;
+        localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(cached));
+      }
+    } catch (e) {}
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
@@ -489,6 +782,18 @@ export async function updateWorker(workerId: string, updates: Partial<WorkerReco
       updatedAt: new Date().toISOString()
     });
     await updateDoc(docRef, cleanedUpdates);
+
+    // Update local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const index = cached.findIndex((w: any) => w.id === workerId);
+      if (index >= 0) {
+        cached[index] = { ...cached[index], ...cleanedUpdates };
+        localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(cached));
+      }
+    } catch (e) {
+      // Local storage fallback
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
     throw error;
@@ -515,10 +820,25 @@ export async function getAllWorkers(): Promise<WorkerRecord[]> {
   try {
     const snapshot = await getDocs(collection(db, 'workers'));
     const workers: WorkerRecord[] = [];
-    snapshot.forEach(d => workers.push(d.data() as WorkerRecord));
+    snapshot.forEach(d => {
+      const data = d.data();
+      workers.push({ id: d.id, ...data } as WorkerRecord);
+    });
+
+    // Save accurate Firestore state to cache (including empty array when all workers are deleted)
+    try {
+      localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(workers));
+    } catch (e) {}
+
     return workers;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      if (Array.isArray(cached)) {
+        return cached;
+      }
+    } catch (e) {}
     return [];
   }
 }
@@ -528,31 +848,52 @@ export async function deleteWorker(workerId: string, currentUser: UserProfile): 
   try {
     const workerRef = doc(db, 'workers', workerId);
     const workerSnap = await getDoc(workerRef);
-    if (!workerSnap.exists()) return;
 
-    const worker = workerSnap.data() as WorkerRecord;
+    if (workerSnap.exists()) {
+      const worker = workerSnap.data() as WorkerRecord;
 
-    const isFounderOrAdmin = ['Founder', 'Super Admin'].includes(currentUser.role) || 
-      currentUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
-    const isRegistrar = worker.registeredByUid === currentUser.uid;
+      const isFounderOrAdmin = ['Founder', 'Super Admin', 'Committee', 'Room Owner', 'Company Owner'].includes(currentUser.role) || 
+        currentUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
+      const isRegistrar = worker.registeredByUid === currentUser.uid;
 
-    // Check entity owner status
-    let isOwnerOfEntity = false;
-    const allEnts = await getAllEntities();
-    const relatedEntityIds = [worker.entityId, worker.companyEntityId, worker.roomEntityId].filter(Boolean);
+      // Check entity owner/staff status
+      let isOwnerOrStaffOfEntity = false;
+      const allEnts = await getAllEntities();
+      const relatedEntityIds = [worker.entityId, worker.companyEntityId, worker.roomEntityId].filter(Boolean);
+      const cleanMobile = (currentUser.mobileNumber || '').replace(/\D/g, '');
 
-    for (const ent of allEnts) {
-      if (relatedEntityIds.includes(ent.id) && ent.ownerUid === currentUser.uid) {
-        isOwnerOfEntity = true;
-        break;
+      for (const ent of allEnts) {
+        if (relatedEntityIds.includes(ent.id)) {
+          if (ent.ownerUid === currentUser.uid || (cleanMobile && ent.staffMobiles?.includes(cleanMobile))) {
+            isOwnerOrStaffOfEntity = true;
+            break;
+          }
+        }
       }
+
+      if (!isFounderOrAdmin && !isRegistrar && !isOwnerOrStaffOfEntity) {
+        throw new Error('Unauthorized to delete this worker registration.');
+      }
+
+      await deleteDoc(workerRef);
     }
 
-    if (!isFounderOrAdmin && !isRegistrar && !isOwnerOfEntity) {
-      throw new Error('Unauthorized to delete this worker registration.');
-    }
+    // Always cleanse local cache
+    try {
+      const cached = JSON.parse(localStorage.getItem('findworkers_cached_workers_v2') || '[]');
+      const updated = cached.filter((w: any) => w.id !== workerId);
+      localStorage.setItem('findworkers_cached_workers_v2', JSON.stringify(updated));
+    } catch (e) {}
 
-    await deleteDoc(workerRef);
+    // Synchronize server-side FAISS index
+    try {
+      const remainingWorkers = await getAllWorkers();
+      fetch('/api/face/faiss-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workers: remainingWorkers })
+      }).catch(() => {});
+    } catch (e) {}
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
     throw error;
