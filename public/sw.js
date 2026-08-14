@@ -1,4 +1,4 @@
-const CACHE_NAME = 'findmyworkers-v16-facescan';
+const CACHE_NAME = 'findmyworkers-v17-pwapersist';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -52,18 +52,21 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network-first for biometric neural net models to prevent tensor corruption from stale cache
+  // Cache-first strategy for biometric neural net models for instant loading in PWA
   if (event.request.url.includes('/models/')) {
     event.respondWith(
-      fetch(event.request)
-        .then((networkResponse) => {
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+        return fetch(event.request).then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             const clone = networkResponse.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           }
           return networkResponse;
-        })
-        .catch(() => caches.match(event.request))
+        });
+      })
     );
     return;
   }

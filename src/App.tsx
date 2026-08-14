@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, getUserProfile, getStaffEntitiesForMobile, checkRedirectAuthResult } from './firebase';
+import { auth, getUserProfile, getStaffEntitiesForMobile, checkRedirectAuthResult, logoutUser } from './firebase';
 import { UserProfile, AppScreen, FOUNDER_EMAIL, UserRole } from './types';
 import { SplashLoading } from './components/SplashLoading';
 import { LoginPage } from './components/LoginPage';
@@ -8,9 +8,20 @@ import { MobileNumberStep } from './components/MobileNumberStep';
 import { WelcomeDashboard } from './components/WelcomeDashboard';
 import { PwaInstallPrompt } from './components/PwaInstallPrompt';
 
+const SESSION_CACHE_KEY = 'fmp_pwa_cached_user_session';
+
 export default function App() {
   const [screen, setScreen] = useState<AppScreen>('splash');
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    try {
+      const cached = localStorage.getItem(SESSION_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.uid) return parsed;
+      }
+    } catch (_) {}
+    return null;
+  });
   const [loadingMessage, setLoadingMessage] = useState('Checking authentication...');
 
   const pendingLoadRef = React.useRef<{ uid: string; promise: Promise<void> } | null>(null);
@@ -57,6 +68,9 @@ export default function App() {
         };
 
         setCurrentUser(profile);
+        try {
+          localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(profile));
+        } catch (_) {}
 
         // Check if mobile number is present
         if (userMobile) {
@@ -66,7 +80,7 @@ export default function App() {
         }
       } catch (error) {
         console.warn('Notice loading profile from Firestore:', error);
-        setCurrentUser({
+        const fallbackProfile: UserProfile = {
           uid: firebaseUser.uid,
           displayName: firebaseUser.displayName || 'User',
           email: firebaseUser.email || '',
@@ -74,7 +88,11 @@ export default function App() {
           mobileNumber: '',
           role: isFounder ? 'Founder' : 'Public Member',
           isApproved: isFounder
-        });
+        };
+        setCurrentUser(fallbackProfile);
+        try {
+          localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(fallbackProfile));
+        } catch (_) {}
         setScreen('mobile_update');
       } finally {
         if (pendingLoadRef.current?.uid === firebaseUser.uid) {
@@ -89,6 +107,18 @@ export default function App() {
 
   useEffect(() => {
     let isMounted = true;
+
+    // Check for cached session to show dashboard instantly on PWA start
+    try {
+      const cachedSessionStr = localStorage.getItem(SESSION_CACHE_KEY);
+      if (cachedSessionStr) {
+        const cachedProfile = JSON.parse(cachedSessionStr) as UserProfile;
+        if (cachedProfile && cachedProfile.uid) {
+          setCurrentUser(cachedProfile);
+          setScreen(cachedProfile.mobileNumber ? 'welcome' : 'mobile_update');
+        }
+      }
+    } catch (_) {}
 
     // Check for redirect result if returning from redirect login
     checkRedirectAuthResult().then(async (redirectUser) => {
@@ -107,8 +137,12 @@ export default function App() {
       if (firebaseUser) {
         await loadAndSetUserProfile(firebaseUser);
       } else {
-        setCurrentUser(null);
-        setScreen('login');
+        // Only navigate to login if there is no valid cached user session
+        const hasSession = !!localStorage.getItem(SESSION_CACHE_KEY);
+        if (!hasSession) {
+          setCurrentUser(null);
+          setScreen('login');
+        }
       }
     });
 
@@ -117,7 +151,13 @@ export default function App() {
       if (document.visibilityState === 'visible' && auth.currentUser) {
         getUserProfile(auth.currentUser.uid).then(profile => {
           if (profile && isMounted) {
-            setCurrentUser(prev => prev ? { ...prev, ...profile } : profile);
+            setCurrentUser(prev => {
+              const updated = prev ? { ...prev, ...profile } : profile;
+              try {
+                localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(updated));
+              } catch (_) {}
+              return updated;
+            });
           }
         }).catch(() => {});
       }
@@ -148,6 +188,9 @@ export default function App() {
 
   const handleMobileSubmit = (updatedProfile: UserProfile) => {
     setCurrentUser(updatedProfile);
+    try {
+      localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(updatedProfile));
+    } catch (_) {}
     setScreen('welcome');
   };
 
@@ -155,7 +198,11 @@ export default function App() {
     setScreen('mobile_update');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      localStorage.removeItem(SESSION_CACHE_KEY);
+      await logoutUser();
+    } catch (_) {}
     setCurrentUser(null);
     setScreen('login');
   };

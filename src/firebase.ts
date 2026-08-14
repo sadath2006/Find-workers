@@ -1,6 +1,8 @@
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
+  setPersistence,
+  browserLocalPersistence,
   GoogleAuthProvider, 
   signInWithPopup, 
   signInWithRedirect,
@@ -40,6 +42,7 @@ import { compressImage } from './utils/imageCompressor';
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
+setPersistence(auth, browserLocalPersistence).catch(() => {});
 
 export const googleProvider = new GoogleAuthProvider();
 
@@ -186,6 +189,7 @@ export async function logoutUser(): Promise<void> {
     if (auth.currentUser) {
       localStorage.removeItem(`fmp_user_profile_${auth.currentUser.uid}`);
     }
+    localStorage.removeItem('fmp_pwa_cached_user_session');
   } catch (_) {}
   await firebaseSignOut(auth);
 }
