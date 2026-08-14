@@ -18,7 +18,7 @@ import {
   projectToArcFace512D,
   isValidArcFaceVector
 } from '../utils/faceMatching';
-import { compressImage } from '../utils/imageCompressor';
+import { compressImage, normalizeImageToSquareDataUrl } from '../utils/imageCompressor';
 import { WorkerDetailModal } from './WorkerDetailModal';
 import { 
   X, 
@@ -280,18 +280,11 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
   // Shutter capture from live camera
   const capturePhotoFromCamera = async () => {
     if (!videoRef.current) return;
-    const video = videoRef.current;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const rawDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    const normalizedDataUrl = await normalizeImageToSquareDataUrl(videoRef.current, 640, 0.92);
     
     stopCamera();
-    setPhotoDataUrl(rawDataUrl);
-    await processFaceImage(rawDataUrl, 'camera');
+    setPhotoDataUrl(normalizedDataUrl);
+    await processFaceImage(normalizedDataUrl, 'camera');
   };
 
   // Gallery file upload
@@ -307,9 +300,9 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       const rawDataUrl = event.target?.result as string;
       if (rawDataUrl) {
         try {
-          const compressed = await compressImage(rawDataUrl, 640, 640, 0.88);
-          setPhotoDataUrl(compressed);
-          await processFaceImage(compressed, 'upload');
+          const normalized = await normalizeImageToSquareDataUrl(rawDataUrl, 640, 0.88);
+          setPhotoDataUrl(normalized);
+          await processFaceImage(normalized, 'upload');
         } catch (err) {
           console.error('File compression error:', err);
           setPhotoDataUrl(rawDataUrl);

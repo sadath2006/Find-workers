@@ -11,7 +11,7 @@ import {
   DEFAULT_BIOMETRIC_THRESHOLD,
   ARCFACE_VERSION 
 } from '../utils/faceMatching';
-import { compressImage } from '../utils/imageCompressor';
+import { compressImage, normalizeImageToSquareDataUrl } from '../utils/imageCompressor';
 import { 
   X, 
   Camera, 
@@ -289,17 +289,14 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
   };
 
   // Capture Photo from Camera
-  const capturePhotoFromCamera = () => {
+  const capturePhotoFromCamera = async () => {
     if (!videoRef.current) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = 360;
-    canvas.height = Math.round((360 * (videoRef.current.videoHeight || 640)) / (videoRef.current.videoWidth || 480));
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+    try {
+      const normalizedDataUrl = await normalizeImageToSquareDataUrl(videoRef.current, 640, 0.90);
       stopCamera();
-      processImageForFaceMatch(dataUrl);
+      processImageForFaceMatch(normalizedDataUrl);
+    } catch (err) {
+      console.error('Error capturing camera photo:', err);
     }
   };
 
@@ -308,10 +305,11 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const dataUrl = event.target?.result as string;
       if (dataUrl) {
-        processImageForFaceMatch(dataUrl);
+        const normalized = await normalizeImageToSquareDataUrl(dataUrl, 640, 0.90);
+        processImageForFaceMatch(normalized);
       }
     };
     reader.readAsDataURL(file);
@@ -319,7 +317,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
 
   // Process image & match face against FAISS vector database
   const processImageForFaceMatch = async (rawDataUrl: string) => {
-    const dataUrl = await compressImage(rawDataUrl, 480, 480, 0.85);
+    const dataUrl = await normalizeImageToSquareDataUrl(rawDataUrl, 640, 0.88);
     setPhotoDataUrl(dataUrl);
     setScanningFace(true);
     setDuplicateMatch(null);

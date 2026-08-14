@@ -14,6 +14,7 @@
 
 import * as faceapi from '@vladmandic/face-api';
 import { FaissIndexFlatIP } from './faissIndex';
+import { normalizeImageToSquareDataUrl } from './imageCompressor';
 
 export const ARCFACE_VERSION = 'arcface_512d_v2';
 export const DEFAULT_BIOMETRIC_THRESHOLD = 0.65; // Calibrated Cosine threshold for same-person verification across devices (>= 0.65, Euclidean <= 0.83)
@@ -169,6 +170,19 @@ export async function loadFaceApiModels(): Promise<boolean> {
   return modelsLoadingPromise;
 }
 
+function createRotatedCanvas(sourceCanvas: HTMLCanvasElement, degrees: number): HTMLCanvasElement {
+  const rotated = document.createElement('canvas');
+  rotated.width = sourceCanvas.width;
+  rotated.height = sourceCanvas.height;
+  const ctx = rotated.getContext('2d');
+  if (!ctx) return sourceCanvas;
+
+  ctx.translate(sourceCanvas.width / 2, sourceCanvas.height / 2);
+  ctx.rotate((degrees * Math.PI) / 180);
+  ctx.drawImage(sourceCanvas, -sourceCanvas.width / 2, -sourceCanvas.height / 2);
+  return rotated;
+}
+
 /**
  * Safely executes face detection with landmark alignment and descriptor extraction.
  * Ensures the selected neural net has valid weights before inference to prevent "load model before inference" errors.
@@ -180,49 +194,92 @@ export async function detectSingleFaceSafely(
   const isLoaded = await loadFaceApiModels();
   if (!isLoaded) return null;
 
+  // Guarantee 1:1 square aspect ratio canvas to prevent neural network padding & landmark warping across mobile PWA and desktop preview
+  let targetCanvas: HTMLCanvasElement;
+  if (img instanceof HTMLCanvasElement) {
+    targetCanvas = img;
+  } else {
+    const w = img instanceof HTMLVideoElement ? img.videoWidth : (img.naturalWidth || img.width);
+    const h = img instanceof HTMLVideoElement ? img.videoHeight : (img.naturalHeight || img.height);
+    const cropSize = (w > 0 && h > 0) ? Math.min(w, h) : 640;
+    const sx = (w > 0 && h > 0) ? Math.floor((w - cropSize) / 2) : 0;
+    const sy = (w > 0 && h > 0) ? Math.floor((h - cropSize) / 2) : 0;
+    
+    targetCanvas = document.createElement('canvas');
+    targetCanvas.width = 640;
+    targetCanvas.height = 640;
+    const ctx = targetCanvas.getContext('2d');
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, 640, 640);
+    } else {
+      targetCanvas = document.createElement('canvas');
+    }
+  }
+
   const hasLandmarks68 = faceapi.nets.faceLandmark68Net.isLoaded && !!(faceapi.nets.faceLandmark68Net as any).params;
   const hasLandmarksTiny = faceapi.nets.faceLandmark68TinyNet.isLoaded && !!(faceapi.nets.faceLandmark68TinyNet as any).params;
   const hasRecognition = faceapi.nets.faceRecognitionNet.isLoaded && !!(faceapi.nets.faceRecognitionNet as any).params;
 
-  // 1. Try SSD MobileNet v1 FIRST for highest facial landmark precision & descriptor consistency
-  if (faceapi.nets.ssdMobilenetv1.isLoaded && !!(faceapi.nets.ssdMobilenetv1 as any).params) {
-    try {
-      const options = new faceapi.SsdMobilenetv1Options({ minConfidence: preferredMinConfidence });
-      let query = faceapi.detectSingleFace(img, options);
-      if (hasLandmarks68) {
-        query = (query as any).withFaceLandmarks(false);
-      } else if (hasLandmarksTiny) {
-        query = (query as any).withFaceLandmarks(true);
+  const tryDetectionOnCanvas = async (canvas: HTMLCanvasElement): Promise<any | null> => {
+    // 1. Try SSD MobileNet v1 FIRST for highest facial landmark precision & descriptor consistency
+    if (faceapi.nets.ssdMobilenetv1.isLoaded && !!(faceapi.nets.ssdMobilenetv1 as any).params) {
+      try {
+        const options = new faceapi.SsdMobilenetv1Options({ minConfidence: preferredMinConfidence });
+        let query = faceapi.detectSingleFace(canvas, options);
+        if (hasLandmarks68) {
+          query = (query as any).withFaceLandmarks(false);
+        } else if (hasLandmarksTiny) {
+          query = (query as any).withFaceLandmarks(true);
+        }
+        if (hasRecognition) {
+          query = (query as any).withFaceDescriptor();
+        }
+        const detection = await query;
+        if (detection && (!hasRecognition || (detection as any).descriptor)) {
+          return detection;
+        }
+      } catch (err: any) {
+        console.warn('SSD MobileNet inference notice:', err?.message || err);
       }
-      if (hasRecognition) {
-        query = (query as any).withFaceDescriptor();
-      }
-      const detection = await query;
-      if (detection && (!hasRecognition || (detection as any).descriptor)) {
-        return detection;
-      }
-    } catch (err: any) {
-      console.warn('SSD MobileNet inference notice:', err?.message || err);
     }
-  }
 
-  // 2. Fallback to Tiny Face Detector
-  if (faceapi.nets.tinyFaceDetector.isLoaded && !!(faceapi.nets.tinyFaceDetector as any).params) {
-    try {
-      const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.15 });
-      let query = faceapi.detectSingleFace(img, options);
-      if (hasLandmarks68) {
-        query = (query as any).withFaceLandmarks(false);
-      } else if (hasLandmarksTiny) {
-        query = (query as any).withFaceLandmarks(true);
+    // 2. Fallback to Tiny Face Detector
+    if (faceapi.nets.tinyFaceDetector.isLoaded && !!(faceapi.nets.tinyFaceDetector as any).params) {
+      try {
+        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.15 });
+        let query = faceapi.detectSingleFace(canvas, options);
+        if (hasLandmarks68) {
+          query = (query as any).withFaceLandmarks(false);
+        } else if (hasLandmarksTiny) {
+          query = (query as any).withFaceLandmarks(true);
+        }
+        if (hasRecognition) {
+          query = (query as any).withFaceDescriptor();
+        }
+        const detection = await query;
+        if (detection) return detection;
+      } catch (err: any) {
+        console.warn('TinyFaceDetector inference notice:', err?.message || err);
       }
-      if (hasRecognition) {
-        query = (query as any).withFaceDescriptor();
-      }
-      const detection = await query;
-      if (detection) return detection;
-    } catch (err: any) {
-      console.warn('TinyFaceDetector inference notice:', err?.message || err);
+    }
+
+    return null;
+  };
+
+  // Attempt 1: Standard upright orientation (0°)
+  let detection = await tryDetectionOnCanvas(targetCanvas);
+  if (detection) return detection;
+
+  // Attempt 2, 3, 4: Rotation fallbacks for sideways/upside-down uploaded mobile gallery photos (90°, 270°, 180°)
+  const anglesToTry = [90, 270, 180];
+  for (const angle of anglesToTry) {
+    const rotated = createRotatedCanvas(targetCanvas, angle);
+    detection = await tryDetectionOnCanvas(rotated);
+    if (detection) {
+      console.log(`✅ Face detected successfully after multi-angle rotation (${angle}° rotation fallback applied).`);
+      return detection;
     }
   }
 
@@ -410,7 +467,8 @@ export async function extractArcFaceEmbedding(imageDataUrl: string): Promise<num
   if (!imageDataUrl) return null;
 
   try {
-    const img = await loadImageElement(imageDataUrl);
+    const squareUrl = await normalizeImageToSquareDataUrl(imageDataUrl, 640, 0.90);
+    const img = await loadImageElement(squareUrl);
     const detection = await detectSingleFaceSafely(img, 0.25);
 
     if (!detection || !detection.detection) {
@@ -489,7 +547,8 @@ export async function runFaceRecognitionPipeline(
 
   // Biometric Pipeline Execution
   try {
-    const img = await loadImageElement(imageDataUrl);
+    const squareUrl = await normalizeImageToSquareDataUrl(imageDataUrl, 640, 0.90);
+    const img = await loadImageElement(squareUrl);
 
     // STEP 1: Fast Face Detection
     const detection = await detectSingleFaceSafely(img, 0.20);

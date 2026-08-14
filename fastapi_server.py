@@ -204,7 +204,7 @@ class WorkerCandidate(BaseModel):
 
 class BiometricRequest(BaseModel):
     imageDataUrl: str
-    threshold: Optional[float] = 0.925
+    threshold: Optional[float] = 0.65
     workers: Optional[List[WorkerCandidate]] = None
 
 class SyncFaissRequest(BaseModel):
@@ -267,7 +267,7 @@ def recognize_face(payload: BiometricRequest):
     Recognition Pipeline:
     Camera image -> SCRFD face detection -> If NO face: NO_FACE_DETECTED -> Landmark Face Alignment -> ArcFace 512D -> FAISS Cosine Similarity Search -> Worker ID
     """
-    threshold = payload.threshold if payload.threshold is not None else 0.925
+    threshold = payload.threshold if payload.threshold is not None else 0.65
     
     # Optionally sync workers list to FAISS if provided
     if payload.workers and len(payload.workers) > 0:
@@ -327,7 +327,7 @@ def verify_duplicate(payload: BiometricRequest):
     Duplicate Registration Check Pipeline:
     New worker image -> SCRFD face detection -> If NO face: NO_FACE_DETECTED -> Landmark Alignment -> ArcFace 512D -> FAISS Cosine Similarity -> Threshold -> DUPLICATE / NOT_DUPLICATE
     """
-    threshold = payload.threshold if payload.threshold is not None else 0.925
+    threshold = payload.threshold if payload.threshold is not None else 0.65
     
     if payload.workers and len(payload.workers) > 0:
         faiss_engine.sync([w.dict() for w in payload.workers])
