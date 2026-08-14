@@ -15,11 +15,13 @@ export default function App() {
 
   const loadAndSetUserProfile = async (firebaseUser: User) => {
     setLoadingMessage('Loading user profile & permissions...');
+    const isFounder = firebaseUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
+
     try {
       const firestoreProfile = await getUserProfile(firebaseUser.uid);
 
       let computedRole: UserRole = 'Public Member';
-      if (firebaseUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase()) {
+      if (isFounder) {
         computedRole = 'Founder';
       } else if (firestoreProfile?.role) {
         computedRole = firestoreProfile.role;
@@ -29,10 +31,12 @@ export default function App() {
 
       // Check if user's mobile is registered as staff under any entity
       if (computedRole === 'Public Member' && userMobile) {
-        const staffEntities = await getStaffEntitiesForMobile(userMobile);
-        if (staffEntities.length > 0) {
-          computedRole = 'Staff';
-        }
+        try {
+          const staffEntities = await getStaffEntitiesForMobile(userMobile);
+          if (staffEntities.length > 0) {
+            computedRole = 'Staff';
+          }
+        } catch (_) {}
       }
 
       const profile: UserProfile = {
@@ -55,14 +59,14 @@ export default function App() {
       }
     } catch (error) {
       console.error('Error loading profile from Firestore:', error);
-      const isFounder = firebaseUser.email?.toLowerCase() === FOUNDER_EMAIL.toLowerCase();
       setCurrentUser({
         uid: firebaseUser.uid,
         displayName: firebaseUser.displayName || 'User',
         email: firebaseUser.email || '',
         photoURL: firebaseUser.photoURL || '',
         mobileNumber: '',
-        role: isFounder ? 'Founder' : 'Public Member'
+        role: isFounder ? 'Founder' : 'Public Member',
+        isApproved: isFounder
       });
       setScreen('mobile_update');
     }
@@ -86,7 +90,7 @@ export default function App() {
           setScreen('login');
         }
       }
-    }, 1200);
+    }, 800);
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
       hasAuthResolved = true;
@@ -104,7 +108,6 @@ export default function App() {
     // Handle tab visibility restore and online network restoration
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible' && auth.currentUser) {
-        // Silently reload user profile in background without showing full splash
         getUserProfile(auth.currentUser.uid).then(profile => {
           if (profile) {
             setCurrentUser(prev => prev ? { ...prev, ...profile } : profile);
@@ -131,7 +134,6 @@ export default function App() {
   };
 
   const handleLoginSuccess = async () => {
-    setScreen('splash');
     if (auth.currentUser) {
       await loadAndSetUserProfile(auth.currentUser);
     }

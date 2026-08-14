@@ -1,6 +1,10 @@
 import { initializeApp } from 'firebase/app';
 import { 
-  getAuth, 
+  initializeAuth,
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  inMemoryPersistence,
   GoogleAuthProvider, 
   signInWithPopup, 
   signInWithRedirect,
@@ -39,7 +43,10 @@ import { compressImage } from './utils/imageCompressor';
 
 const app = initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+// Initialize Firebase Auth with multiple fallback persistence tiers (IndexedDB -> localStorage -> sessionStorage -> memory)
+export const auth = initializeAuth(app, {
+  persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence, inMemoryPersistence]
+});
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -53,21 +60,6 @@ export const db = initializeFirestore(
   },
   firebaseConfig.firestoreDatabaseId || undefined
 );
-
-// Silently clear any legacy/corrupted IndexedDB databases from prior versions
-if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
-  try {
-    if ('databases' in window.indexedDB && typeof window.indexedDB.databases === 'function') {
-      window.indexedDB.databases().then(dbs => {
-        dbs.forEach(d => {
-          if (d.name && d.name.startsWith('firestore')) {
-            try { window.indexedDB.deleteDatabase(d.name); } catch (_) {}
-          }
-        });
-      }).catch(() => {});
-    }
-  } catch (_) {}
-}
 
 enum OperationType {
   CREATE = 'create',
