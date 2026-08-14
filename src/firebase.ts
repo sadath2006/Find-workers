@@ -1,10 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  initializeAuth,
-  browserLocalPersistence,
-  browserSessionPersistence,
-  inMemoryPersistence,
   GoogleAuthProvider, 
   signInWithPopup, 
   signInWithRedirect,
@@ -41,17 +37,7 @@ import { compressImage } from './utils/imageCompressor';
 
 const app = initializeApp(firebaseConfig);
 
-// Initialize Auth with localStorage-based persistence to completely eliminate
-// the fragile IndexedDB "Database is closing / hidden" errors when mobile PWAs background or open popups.
-export const auth = (() => {
-  try {
-    return initializeAuth(app, {
-      persistence: [browserLocalPersistence, browserSessionPersistence, inMemoryPersistence]
-    });
-  } catch (_e) {
-    return getAuth(app);
-  }
-})();
+export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
