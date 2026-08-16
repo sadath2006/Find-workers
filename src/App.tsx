@@ -59,9 +59,9 @@ export default function App() {
 
         const profile: UserProfile = {
           uid: firebaseUser.uid,
-          displayName: firebaseUser.displayName || 'User',
-          email: firebaseUser.email || '',
-          photoURL: firebaseUser.photoURL || '',
+          displayName: firebaseUser.displayName || firestoreProfile?.displayName || 'User',
+          email: firebaseUser.email || firestoreProfile?.email || '',
+          photoURL: firebaseUser.photoURL || firestoreProfile?.photoURL || '',
           mobileNumber: userMobile,
           role: computedRole,
           isApproved: firestoreProfile?.isApproved || (computedRole === 'Founder')
@@ -107,8 +107,9 @@ export default function App() {
 
   useEffect(() => {
     let isMounted = true;
+    let authResolved = false;
 
-    // Check for cached session to show dashboard instantly on PWA start
+    // Check for cached session to show dashboard immediately on PWA restart
     try {
       const cachedSessionStr = localStorage.getItem(SESSION_CACHE_KEY);
       if (cachedSessionStr) {
@@ -123,26 +124,38 @@ export default function App() {
     // Check for redirect result if returning from redirect login
     checkRedirectAuthResult().then(async (redirectUser) => {
       if (redirectUser && isMounted) {
+        authResolved = true;
         await loadAndSetUserProfile(redirectUser);
       }
     }).catch(() => {});
 
-    // Minimum splash duration so UI doesn't flicker
-    const minSplashPromise = new Promise(res => setTimeout(res, 500));
+    // Safety fallback timer to prevent infinite splash loading if Firebase auth takes too long
+    const timeoutFallback = setTimeout(() => {
+      if (!authResolved && isMounted) {
+        if (auth.currentUser) {
+          loadAndSetUserProfile(auth.currentUser);
+        } else {
+          const cachedSessionStr = localStorage.getItem(SESSION_CACHE_KEY);
+          if (!cachedSessionStr) {
+            setScreen('login');
+          }
+        }
+      }
+    }, 2800);
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
-      await minSplashPromise;
+      authResolved = true;
       if (!isMounted) return;
 
       if (firebaseUser) {
         await loadAndSetUserProfile(firebaseUser);
       } else {
-        // Only navigate to login if there is no valid cached user session
-        const hasSession = !!localStorage.getItem(SESSION_CACHE_KEY);
-        if (!hasSession) {
-          setCurrentUser(null);
-          setScreen('login');
-        }
+        // User is not authenticated with Firebase: clear cached session and go to login
+        try {
+          localStorage.removeItem(SESSION_CACHE_KEY);
+        } catch (_) {}
+        setCurrentUser(null);
+        setScreen('login');
       }
     });
 
@@ -168,6 +181,7 @@ export default function App() {
 
     return () => {
       isMounted = false;
+      clearTimeout(timeoutFallback);
       unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       window.removeEventListener('online', handleVisibilityOrOnline);
@@ -183,6 +197,8 @@ export default function App() {
   const handleLoginSuccess = async () => {
     if (auth.currentUser) {
       await loadAndSetUserProfile(auth.currentUser);
+    } else {
+      setScreen('login');
     }
   };
 
@@ -209,26 +225,39 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased">
-      {screen === 'splash' && <SplashLoading message={loadingMessage} />}
-
-      {screen === 'login' && <LoginPage onSuccess={handleLoginSuccess} />}
-
-      {screen === 'mobile_update' && currentUser && (
-        <MobileNumberStep
-          user={currentUser}
-          onComplete={handleMobileSubmit}
-          onLogout={handleLogout}
-          onCancel={currentUser.mobileNumber ? () => setScreen('welcome') : undefined}
+      {screen === 'splash' && (
+        <SplashLoading 
+          message={loadingMessage} 
+          onSkip={() => setScreen(currentUser ? (currentUser.mobileNumber ? 'welcome' : 'mobile_update') : 'login')}
         />
       )}
 
-      {screen === 'welcome' && currentUser && (
-        <WelcomeDashboard
-          user={currentUser}
-          onEditMobile={handleEditMobile}
-          onLogout={handleLogout}
-          onUserRefresh={handleRefreshUser}
-        />
+      {screen === 'login' && <LoginPage onSuccess={handleLoginSuccess} />}
+
+      {screen === 'mobile_update' && (
+        currentUser ? (
+          <MobileNumberStep
+            user={currentUser}
+            onComplete={handleMobileSubmit}
+            onLogout={handleLogout}
+            onCancel={currentUser.mobileNumber ? () => setScreen('welcome') : undefined}
+          />
+        ) : (
+          <LoginPage onSuccess={handleLoginSuccess} />
+        )
+      )}
+
+      {screen === 'welcome' && (
+        currentUser ? (
+          <WelcomeDashboard
+            user={currentUser}
+            onEditMobile={handleEditMobile}
+            onLogout={handleLogout}
+            onUserRefresh={handleRefreshUser}
+          />
+        ) : (
+          <LoginPage onSuccess={handleLoginSuccess} />
+        )
       )}
 
       {/* PWA Banner for mobile web install */}
@@ -236,3 +265,4 @@ export default function App() {
     </div>
   );
 }
+

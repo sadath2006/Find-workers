@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getAuth, 
   setPersistence,
@@ -12,7 +12,7 @@ import {
 } from 'firebase/auth';
 import { 
   initializeFirestore,
-  memoryLocalCache,
+  getFirestore,
   doc, 
   getDoc, 
   setDoc, 
@@ -39,20 +39,17 @@ import {
 } from './types';
 import { compressImage } from './utils/imageCompressor';
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 export const auth = getAuth(app);
 setPersistence(auth, browserLocalPersistence).catch(() => {});
 
 export const googleProvider = new GoogleAuthProvider();
 
-// Initialize Firestore strictly with in-memory caching and forced long-polling to prevent connection drops across proxies/PWAs
 export const db = initializeFirestore(
   app,
   {
-    localCache: memoryLocalCache(),
     ignoreUndefinedProperties: true,
-    experimentalForceLongPolling: true,
   },
   firebaseConfig.firestoreDatabaseId || undefined
 );

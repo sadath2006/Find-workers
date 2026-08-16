@@ -1,10 +1,7 @@
 /**
- * Utility to compress and normalize image data URLs and video streams.
+ * Biometric Image Processing & EXIF Orientation Normalization Engine.
  */
 
-/**
- * Converts a data URL or URL string into a Blob.
- */
 async function dataUrlToBlob(dataUrl: string): Promise<Blob | null> {
   try {
     const res = await fetch(dataUrl);
@@ -15,39 +12,49 @@ async function dataUrlToBlob(dataUrl: string): Promise<Blob | null> {
 }
 
 /**
- * Normalizes any image source (HTMLVideoElement, HTMLImageElement, ImageBitmap, or Data URL string)
- * into a standardized 1:1 square JPEG Data URL (640x640 by default).
+ * Normalizes any image source (HTMLVideoElement, HTMLImageElement, ImageBitmap, or Data URL)
+ * for Biometric Face Detection & Deep Feature Extraction.
  * 
- * Automatically applies EXIF Orientation correction (crucial for mobile gallery uploads in PWA/Web)
- * and center-crops the input so there is NO aspect ratio stretching or letterboxing.
+ * CRITICAL ADVANTAGES:
+ * 1. Preserves FULL aspect ratio (NO center-cropping that cuts off foreheads, hair, or chins on mobile portrait selfies).
+ * 2. Automatically corrects EXIF Orientation on iOS Safari and Android Chrome gallery uploads.
+ * 3. Scales to optimal neural net resolution (max dimension 800px) with high-quality bicubic smoothing.
  */
-export async function normalizeImageToSquareDataUrl(
+export async function normalizeImageForBiometrics(
   source: HTMLVideoElement | HTMLImageElement | ImageBitmap | string,
-  targetSize: number = 640,
-  quality: number = 0.88
+  maxDimension: number = 800,
+  quality: number = 0.92
 ): Promise<string> {
   if (!source) return '';
 
   return new Promise(async (resolve) => {
-    // 1. Try modern createImageBitmap with EXIF orientation auto-correction for string sources
+    // 1. Try modern createImageBitmap with EXIF orientation auto-correction for string/blob sources
     if (typeof source === 'string' && (source.startsWith('data:image') || source.startsWith('blob:') || source.startsWith('http'))) {
       try {
         const blob = await dataUrlToBlob(source);
         if (blob && typeof createImageBitmap === 'function') {
           const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
           if (bitmap && bitmap.width > 0 && bitmap.height > 0) {
-            const cropSize = Math.min(bitmap.width, bitmap.height);
-            const sx = Math.floor((bitmap.width - cropSize) / 2);
-            const sy = Math.floor((bitmap.height - cropSize) / 2);
+            let targetW = bitmap.width;
+            let targetH = bitmap.height;
+            if (Math.max(targetW, targetH) > maxDimension) {
+              if (targetW >= targetH) {
+                targetH = Math.round((targetH * maxDimension) / targetW);
+                targetW = maxDimension;
+              } else {
+                targetW = Math.round((targetW * maxDimension) / targetH);
+                targetH = maxDimension;
+              }
+            }
 
             const canvas = document.createElement('canvas');
-            canvas.width = targetSize;
-            canvas.height = targetSize;
+            canvas.width = targetW;
+            canvas.height = targetH;
             const ctx = canvas.getContext('2d');
             if (ctx) {
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = 'high';
-              ctx.drawImage(bitmap, sx, sy, cropSize, cropSize, 0, 0, targetSize, targetSize);
+              ctx.drawImage(bitmap, 0, 0, targetW, targetH);
               const resultDataUrl = canvas.toDataURL('image/jpeg', quality);
               bitmap.close();
               if (resultDataUrl) {
@@ -62,7 +69,7 @@ export async function normalizeImageToSquareDataUrl(
       }
     }
 
-    // 2. Fallback processing for video elements, image elements or plain images
+    // 2. Element Processing (HTMLVideoElement, HTMLImageElement, ImageBitmap)
     const processElement = (el: HTMLVideoElement | HTMLImageElement | ImageBitmap) => {
       try {
         let srcWidth = 0;
@@ -84,14 +91,21 @@ export async function normalizeImageToSquareDataUrl(
           srcHeight = 480;
         }
 
-        // Center square crop
-        const cropSize = Math.min(srcWidth, srcHeight);
-        const sx = Math.floor((srcWidth - cropSize) / 2);
-        const sy = Math.floor((srcHeight - cropSize) / 2);
+        let targetW = srcWidth;
+        let targetH = srcHeight;
+        if (Math.max(targetW, targetH) > maxDimension) {
+          if (targetW >= targetH) {
+            targetH = Math.round((targetH * maxDimension) / targetW);
+            targetW = maxDimension;
+          } else {
+            targetW = Math.round((targetW * maxDimension) / targetH);
+            targetH = maxDimension;
+          }
+        }
 
         const canvas = document.createElement('canvas');
-        canvas.width = targetSize;
-        canvas.height = targetSize;
+        canvas.width = targetW;
+        canvas.height = targetH;
         const ctx = canvas.getContext('2d');
 
         if (!ctx) {
@@ -101,12 +115,12 @@ export async function normalizeImageToSquareDataUrl(
 
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(el, sx, sy, cropSize, cropSize, 0, 0, targetSize, targetSize);
+        ctx.drawImage(el, 0, 0, targetW, targetH);
 
         const resultDataUrl = canvas.toDataURL('image/jpeg', quality);
         resolve(resultDataUrl || (typeof source === 'string' ? source : ''));
       } catch (err) {
-        console.warn('Square normalization error:', err);
+        console.warn('Biometric normalization error:', err);
         resolve(typeof source === 'string' ? source : '');
       }
     };
@@ -129,6 +143,17 @@ export async function normalizeImageToSquareDataUrl(
   });
 }
 
+/**
+ * Backward-compatible wrapper for square photo normalization.
+ */
+export async function normalizeImageToSquareDataUrl(
+  source: HTMLVideoElement | HTMLImageElement | ImageBitmap | string,
+  targetSize: number = 640,
+  quality: number = 0.88
+): Promise<string> {
+  return normalizeImageForBiometrics(source, targetSize, quality);
+}
+
 export async function compressImage(
   dataUrl: string,
   maxWidth: number = 640,
@@ -139,5 +164,5 @@ export async function compressImage(
     return dataUrl || '';
   }
 
-  return normalizeImageToSquareDataUrl(dataUrl, Math.max(maxWidth, maxHeight), quality);
+  return normalizeImageForBiometrics(dataUrl, Math.max(maxWidth, maxHeight), quality);
 }

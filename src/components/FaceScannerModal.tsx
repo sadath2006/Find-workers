@@ -18,7 +18,7 @@ import {
   projectToArcFace512D,
   isValidArcFaceVector
 } from '../utils/faceMatching';
-import { compressImage, normalizeImageToSquareDataUrl } from '../utils/imageCompressor';
+import { compressImage, normalizeImageForBiometrics, normalizeImageToSquareDataUrl } from '../utils/imageCompressor';
 import { WorkerDetailModal } from './WorkerDetailModal';
 import { 
   X, 
@@ -201,13 +201,13 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
     if (liveScanTimerRef.current) clearInterval(liveScanTimerRef.current);
 
     liveScanTimerRef.current = setInterval(async () => {
-      if (!videoRef.current || videoRef.current.paused || videoRef.current.ended || isScanningFrameRef.current) return;
-      if (!videoRef.current.videoWidth || !videoRef.current.videoHeight) return;
+      const video = videoRef.current;
+      if (!video || video.paused || video.ended || isScanningFrameRef.current) return;
+      if (video.readyState < 2 || !video.videoWidth || !video.videoHeight || video.videoWidth < 30 || video.videoHeight < 30) return;
 
       isScanningFrameRef.current = true;
       try {
-        const video = videoRef.current;
-        const detection = await detectSingleFaceSafely(video, 0.20);
+        const detection = await detectSingleFaceSafely(video, 0.15);
         if (!detection || !detection.descriptor) {
           setLiveMatch(null);
           return;
@@ -219,7 +219,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
           return;
         }
 
-        const workers = workersCacheRef.current;
+        const workers = (workersCacheRef.current && workersCacheRef.current.length > 0) ? workersCacheRef.current : allWorkers;
         if (workers && workers.length > 0) {
           const matchResult = await verifyArcFaceDuplicateFaiss(arcface512, undefined, workers, DEFAULT_BIOMETRIC_THRESHOLD);
           if (matchResult.duplicateFound && matchResult.matchedWorkerId) {
@@ -241,7 +241,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       } finally {
         isScanningFrameRef.current = false;
       }
-    }, 600);
+    }, 350);
   };
 
   // Toggle Camera Front / Back
@@ -280,7 +280,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
   // Shutter capture from live camera
   const capturePhotoFromCamera = async () => {
     if (!videoRef.current) return;
-    const normalizedDataUrl = await normalizeImageToSquareDataUrl(videoRef.current, 640, 0.92);
+    const normalizedDataUrl = await normalizeImageForBiometrics(videoRef.current, 800, 0.92);
     
     stopCamera();
     setPhotoDataUrl(normalizedDataUrl);
@@ -289,6 +289,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
 
   // Gallery file upload
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    stopCamera();
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -300,7 +301,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       const rawDataUrl = event.target?.result as string;
       if (rawDataUrl) {
         try {
-          const normalized = await normalizeImageToSquareDataUrl(rawDataUrl, 640, 0.88);
+          const normalized = await normalizeImageForBiometrics(rawDataUrl, 800, 0.92);
           setPhotoDataUrl(normalized);
           await processFaceImage(normalized, 'upload');
         } catch (err) {
@@ -315,6 +316,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       setScanning(false);
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   // ArcFace 512D Biometric Matching Engine
@@ -325,16 +327,22 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
     setStatusText('Extracting ArcFace 512D Biometrics...');
 
     try {
+      const workersToSearch = (allWorkers && allWorkers.length > 0) ? allWorkers : await getAllWorkers();
+      if (workersToSearch.length !== allWorkers.length) {
+        setAllWorkers(workersToSearch);
+        workersCacheRef.current = workersToSearch;
+      }
+
       const result = await runFaceRecognitionPipeline(
         imageDataUrl,
-        allWorkers,
+        workersToSearch,
         DEFAULT_BIOMETRIC_THRESHOLD
       );
 
       setPipelineResult(result);
 
       if (result.finalDecision === 'DUPLICATE' && result.matchedWorkerId) {
-        const found = allWorkers.find(w => w.id === result.matchedWorkerId);
+        const found = workersToSearch.find(w => w.id === result.matchedWorkerId);
         if (found) {
           setMatchedWorker(found);
           setStatusText(`Biometric Match Verified! (${result.similarityScore}% Confidence)`);

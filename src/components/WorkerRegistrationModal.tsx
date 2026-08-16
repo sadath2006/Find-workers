@@ -9,9 +9,11 @@ import {
   FacePipelineDebugResponse,
   isValidArcFaceVector, 
   DEFAULT_BIOMETRIC_THRESHOLD,
-  ARCFACE_VERSION 
+  ARCFACE_VERSION,
+  detectSingleFaceSafely,
+  projectToArcFace512D
 } from '../utils/faceMatching';
-import { compressImage, normalizeImageToSquareDataUrl } from '../utils/imageCompressor';
+import { compressImage, normalizeImageForBiometrics, normalizeImageToSquareDataUrl } from '../utils/imageCompressor';
 import { 
   X, 
   Camera, 
@@ -73,7 +75,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
   const [skill, setSkill] = useState<string>('');
 
   const [loading, setLoading] = useState<boolean>(false);
-  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
 
   // Camera video ref & live face detection
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -225,30 +227,29 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
     }
 
     liveScanTimerRef.current = setInterval(async () => {
-      if (!videoRef.current || videoRef.current.paused || videoRef.current.ended || isScanningFrameRef.current) return;
-      if (!videoRef.current.videoWidth || !videoRef.current.videoHeight) return;
+      const video = videoRef.current;
+      if (!video || video.paused || video.ended || isScanningFrameRef.current) return;
+      if (video.readyState < 2 || !video.videoWidth || !video.videoHeight || video.videoWidth < 30 || video.videoHeight < 30) return;
 
       isScanningFrameRef.current = true;
       setLiveScanning(true);
 
       try {
-        const video = videoRef.current;
-        const canvas = document.createElement('canvas');
-        canvas.width = 320;
-        canvas.height = Math.round((320 * (video.videoHeight || 640)) / (video.videoWidth || 480));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.70);
-
-        const vector = await extractArcFaceEmbedding(frameDataUrl);
-        if (!vector) {
+        const detection = await detectSingleFaceSafely(video, 0.15);
+        if (!detection || !detection.descriptor) {
           setLiveMatch(null);
           return;
         }
 
-        const allWorkers = workersCacheRef.current;
+        const vector = projectToArcFace512D(detection.descriptor);
+        if (!isValidArcFaceVector(vector)) {
+          setLiveMatch(null);
+          return;
+        }
+
+        const allWorkers = (workersCacheRef.current && workersCacheRef.current.length > 0) 
+          ? workersCacheRef.current 
+          : await getAllWorkers();
         
         if (allWorkers && allWorkers.length > 0) {
           const matchResult = await verifyArcFaceDuplicateFaiss(vector, undefined, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
@@ -292,7 +293,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
   const capturePhotoFromCamera = async () => {
     if (!videoRef.current) return;
     try {
-      const normalizedDataUrl = await normalizeImageToSquareDataUrl(videoRef.current, 640, 0.90);
+      const normalizedDataUrl = await normalizeImageForBiometrics(videoRef.current, 800, 0.92);
       stopCamera();
       processImageForFaceMatch(normalizedDataUrl);
     } catch (err) {
@@ -302,36 +303,54 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
 
   // Handle File Upload
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    stopCamera();
     const file = e.target.files?.[0];
     if (!file) return;
+
+    setFaceVector([]);
+    setDuplicateMatch(null);
+    setPipelineDebug(null);
+
     const reader = new FileReader();
     reader.onload = async (event) => {
       const dataUrl = event.target?.result as string;
       if (dataUrl) {
-        const normalized = await normalizeImageToSquareDataUrl(dataUrl, 640, 0.90);
-        processImageForFaceMatch(normalized);
+        try {
+          const normalized = await normalizeImageForBiometrics(dataUrl, 800, 0.92);
+          processImageForFaceMatch(normalized);
+        } catch (err) {
+          processImageForFaceMatch(dataUrl);
+        }
       }
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   // Process image & match face against FAISS vector database
   const processImageForFaceMatch = async (rawDataUrl: string) => {
-    const dataUrl = await normalizeImageToSquareDataUrl(rawDataUrl, 640, 0.88);
+    stopCamera();
+    const dataUrl = await normalizeImageForBiometrics(rawDataUrl, 800, 0.92);
     setPhotoDataUrl(dataUrl);
     setScanningFace(true);
     setDuplicateMatch(null);
+    setFaceVector([]);
     setMsg(null);
     setPipelineDebug(null);
 
     try {
       const allWorkers = await getAllWorkers();
+      workersCacheRef.current = allWorkers;
       console.log(`Fetched ${allWorkers.length} workers from Firestore for FAISS duplicate check`);
 
       // Execute full mandatory face recognition pipeline on optimized image (Threshold = DEFAULT_BIOMETRIC_THRESHOLD)
       const pipelineResult = await runFaceRecognitionPipeline(dataUrl, allWorkers, DEFAULT_BIOMETRIC_THRESHOLD);
       setPipelineDebug(pipelineResult);
-      setFaceVector(pipelineResult.embedding || []);
+      if (pipelineResult.embedding && pipelineResult.embedding.length === 512) {
+        setFaceVector(pipelineResult.embedding);
+      } else {
+        setFaceVector([]);
+      }
 
       if (pipelineResult.finalDecision === 'NO_FACE_DETECTED') {
         setDuplicateMatch(null);
@@ -699,7 +718,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={startCamera}
+                onClick={() => startCamera()}
                 className="p-3 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-xl flex flex-col items-center justify-center space-y-1 transition-colors cursor-pointer"
               >
                 <Camera className="w-5 h-5 text-red-500" />
@@ -720,32 +739,41 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
           )}
         </div>
 
-        {/* PIPELINE DEBUG RESPONSE PANEL */}
+        {/* PIPELINE DEBUG RESPONSE PANEL (Requirement 17) */}
         {pipelineDebug && (
-          <div className="p-3 bg-slate-950 border border-slate-800 rounded-2xl space-y-1.5 font-mono text-xs text-slate-300">
-            <div className="font-bold text-slate-200 border-b border-slate-800 pb-1 flex justify-between items-center">
-              <span className="text-[11px] text-cyan-400 uppercase tracking-wider font-extrabold flex items-center space-x-1">
+          <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl space-y-2 font-mono text-xs text-slate-300">
+            <div className="font-bold text-slate-200 border-b border-slate-800 pb-1.5 flex justify-between items-center">
+              <span className="text-[11px] text-cyan-400 uppercase tracking-wider font-extrabold flex items-center space-x-1.5">
                 <Scan className="w-3.5 h-3.5" />
-                <span>Face Pipeline Debug Response</span>
+                <span>Biometric Debug Mode Telemetry</span>
               </span>
               <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
                 pipelineDebug.finalDecision === 'DUPLICATE' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
                 pipelineDebug.finalDecision === 'NOT_DUPLICATE' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' :
+                pipelineDebug.finalDecision === 'MULTIPLE_FACES' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40' :
                 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
               }`}>
                 {pipelineDebug.finalDecision}
               </span>
             </div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
               <div>faceDetected: <span className={pipelineDebug.faceDetected ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>{String(pipelineDebug.faceDetected)}</span></div>
-              <div>faceConfidence: <span className="text-cyan-400">{pipelineDebug.faceConfidence}</span></div>
+              <div>faceCount: <span className={pipelineDebug.faceCount === 1 ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>{pipelineDebug.faceCount}</span></div>
               <div>faceQuality: <span className="text-cyan-400">{pipelineDebug.faceQuality}</span></div>
-              <div>similarityScore: <span className="text-cyan-400">{pipelineDebug.similarityScore}%</span></div>
-              <div>matchedWorkerId: <span className="text-amber-300">{pipelineDebug.matchedWorkerId || 'null'}</span></div>
+              <div>embeddingDimension: <span className="text-cyan-400 font-bold">{pipelineDebug.embeddingDimension}</span></div>
+              <div>modelName: <span className="text-slate-300 text-[10px] truncate block">{pipelineDebug.modelName || 'ArcFace-512D'}</span></div>
+              <div>modelVersion: <span className="text-indigo-300 text-[10px]">{pipelineDebug.modelVersion || 'arcface_512d_v2'}</span></div>
+              <div>similarityScore: <span className="text-cyan-400 font-bold">{pipelineDebug.similarityScore}%</span></div>
+              <div>cosineSimilarity: <span className="text-cyan-400">{pipelineDebug.cosineSimilarity ?? pipelineDebug.similarity}</span></div>
+              <div>euclideanDistance: <span className="text-cyan-400">{pipelineDebug.euclideanDistance ?? 'N/A'}</span></div>
               <div>threshold: <span className="text-cyan-400">{pipelineDebug.threshold}</span></div>
+              <div className="col-span-2">matchedWorkerId: <span className="text-amber-300 font-mono text-[10px]">{pipelineDebug.matchedWorkerId ? pipelineDebug.matchedWorkerId : 'null (None)'}</span></div>
             </div>
-            <p className="text-[10px] text-slate-400 italic pt-0.5 border-t border-slate-900">
-              finalDecision: <span className="font-bold text-white">{pipelineDebug.finalDecision}</span>
+            <p className="text-[10px] text-slate-400 italic pt-1 border-t border-slate-900 flex justify-between items-center">
+              <span>finalDecision: <span className="font-bold text-white">{pipelineDebug.finalDecision}</span></span>
+              {pipelineDebug.matchedWorkerName && (
+                <span className="text-amber-400 font-bold">Matched: {pipelineDebug.matchedWorkerName}</span>
+              )}
             </p>
           </div>
         )}

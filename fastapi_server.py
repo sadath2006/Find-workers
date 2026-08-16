@@ -41,6 +41,25 @@ print("✅ InsightFace SCRFD Detector & ArcFace 512D Embedder ready!")
 
 EMBEDDING_DIM = 512
 
+def is_valid_vector_quality(vec: Any) -> bool:
+    """
+    Ensures vector is non-null, 512D or 128D, has non-zero variance,
+    and is not flat, empty, zeroed, or all-identical constant numbers.
+    """
+    if vec is None:
+        return False
+    if not isinstance(vec, (list, np.ndarray)):
+        return False
+    arr = np.array(vec, dtype=np.float32)
+    if arr.ndim != 1 or arr.shape[0] not in (512, 128):
+        return False
+    if not np.isfinite(arr).all():
+        return False
+    var = float(np.var(arr))
+    if var < 1e-6:
+        return False
+    return True
+
 class FaissEngine:
     def __init__(self, dimension: int = EMBEDDING_DIM):
         self.dimension = dimension
@@ -55,7 +74,7 @@ class FaissEngine:
             self.worker_ids = []
             self.worker_metadata = {}
 
-    def sync(self, workers: List[dict]) -> int:
+    def sync(self, workers: List[dict], ignore_worker_id: Optional[str] = None) -> int:
         with self.lock:
             self.index = faiss.IndexFlatIP(self.dimension)
             self.worker_ids = []
@@ -65,7 +84,7 @@ class FaissEngine:
             ids = []
             for w in workers:
                 w_id = str(w.get("id") or w.get("workerId") or "")
-                if not w_id:
+                if not w_id or (ignore_worker_id and w_id == ignore_worker_id):
                     continue
                 name = str(w.get("name") or "")
                 entity_name = str(w.get("entityName") or "")
@@ -77,7 +96,7 @@ class FaissEngine:
                     embeddings = [w.get("faceEmbedding")]
                 
                 for vec in embeddings:
-                    if isinstance(vec, list) and len(vec) == self.dimension:
+                    if is_valid_vector_quality(vec) and len(vec) == self.dimension:
                         arr = np.array(vec, dtype=np.float32)
                         norm = np.linalg.norm(arr)
                         if norm > 0:
@@ -93,7 +112,7 @@ class FaissEngine:
             return len(ids)
 
     def add_worker_embedding(self, worker_id: str, name: str, vector: List[float], entity_name: str = ""):
-        if not vector or len(vector) != self.dimension:
+        if not is_valid_vector_quality(vector) or len(vector) != self.dimension:
             return
         with self.lock:
             arr = np.array(vector, dtype=np.float32)
@@ -104,8 +123,8 @@ class FaissEngine:
             self.index.add(np.array([arr], dtype=np.float32))
             self.worker_ids.append(worker_id)
 
-    def search(self, query_vector: List[float], top_k: int = 1) -> Tuple[float, Optional[str], Optional[dict]]:
-        if not query_vector or len(query_vector) != self.dimension:
+    def search(self, query_vector: List[float], top_k: int = 10, ignore_worker_id: Optional[str] = None) -> Tuple[float, Optional[str], Optional[dict]]:
+        if not is_valid_vector_quality(query_vector) or len(query_vector) != self.dimension:
             return 0.0, None, None
         with self.lock:
             if self.index.ntotal == 0 or len(self.worker_ids) == 0:
@@ -119,13 +138,16 @@ class FaissEngine:
             k = min(top_k, self.index.ntotal)
             sims, idxs = self.index.search(np.array([arr], dtype=np.float32), k)
             
-            if len(sims[0]) > 0 and idxs[0][0] >= 0:
-                top_idx = int(idxs[0][0])
-                top_sim = float(sims[0][0])
-                if top_idx < len(self.worker_ids):
-                    matched_id = self.worker_ids[top_idx]
-                    meta = self.worker_metadata.get(matched_id)
-                    return top_sim, matched_id, meta
+            if len(sims[0]) > 0:
+                for i in range(len(idxs[0])):
+                    top_idx = int(idxs[0][i])
+                    top_sim = float(sims[0][i])
+                    if top_idx >= 0 and top_idx < len(self.worker_ids):
+                        matched_id = self.worker_ids[top_idx]
+                        if ignore_worker_id and matched_id == ignore_worker_id:
+                            continue
+                        meta = self.worker_metadata.get(matched_id)
+                        return top_sim, matched_id, meta
             
             return 0.0, None, None
 
@@ -206,6 +228,7 @@ class BiometricRequest(BaseModel):
     imageDataUrl: str
     threshold: Optional[float] = 0.86
     workers: Optional[List[WorkerCandidate]] = None
+    ignoreWorkerId: Optional[str] = None
 
 class SyncFaissRequest(BaseModel):
     workers: List[WorkerCandidate]
@@ -330,7 +353,7 @@ def verify_duplicate(payload: BiometricRequest):
     threshold = payload.threshold if payload.threshold is not None else 0.86
     
     if payload.workers and len(payload.workers) > 0:
-        faiss_engine.sync([w.dict() for w in payload.workers])
+        faiss_engine.sync([w.dict() for w in payload.workers], ignore_worker_id=payload.ignoreWorkerId)
         
     try:
         bgr_img = decode_image_to_cv2(payload.imageDataUrl)
@@ -364,7 +387,7 @@ def verify_duplicate(payload: BiometricRequest):
         }
     
     # FAISS Search
-    top_sim, matched_id, meta = faiss_engine.search(embedding.tolist(), top_k=1)
+    top_sim, matched_id, meta = faiss_engine.search(embedding.tolist(), top_k=10, ignore_worker_id=payload.ignoreWorkerId)
     
     is_duplicate = (top_sim >= threshold) and (matched_id is not None)
     final_decision = "DUPLICATE" if is_duplicate else "NOT_DUPLICATE"
@@ -409,4 +432,4 @@ def enroll_worker(payload: EnrollWorkerRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("fastapi_server:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("fastapi_server:app", host="127.0.0.1", port=5050, reload=False)

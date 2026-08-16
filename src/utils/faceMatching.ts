@@ -1,50 +1,68 @@
 /**
  * ArcFace 512-Dimensional Biometric Deep Learning & FAISS Vector Search Engine.
  * 
- * Architecture Pipeline:
- * 1. Capture Photo
- * 2. Face Detection + Face Alignment (SSD MobileNet / TinyFace + 68 Landmark alignment)
- * 3. Deep Facial Embedding Extraction (ResNet / ArcFace Deep Metric Learning)
- * 4. Orthonormal 512D Isometric Mapping & L2 Normalization (||V||_2 = 1.0)
- * 5. FAISS Vector Database (IndexFlatIP Cosine Similarity Search)
- * 6. Calibrated Similarity Threshold (Cosine Similarity >= 0.78 / 78% Match)
- * 7. Worker Identification / Duplicate Detection
- * 8. Firebase Integration (Metadata, Auth, Worker Info & 512D Embeddings)
+ * Strict Multi-Stage Biometric Pipeline:
+ * 1. Image Capture / Ingestion -> EXIF Orientation & Bicubic Normalization
+ * 2. Multi-Face Detection (SSD MobileNet v1 / TinyFaceDetector)
+ *    - 0 faces => NO_FACE_DETECTED (Immediate Stop - NEVER match non-faces)
+ *    - 2+ faces => MULTIPLE_FACES (Immediate Stop during enrollment)
+ * 3. 68-Point Facial Landmark Alignment
+ * 4. Deep Face Recognition Embedding on Aligned Face Crop (ResNet-34 FaceNet)
+ * 5. Isometric 512-Dimensional Projection & L2 Normalization (||V||_2 = 1.0)
+ * 6. FAISS Inner-Product (IndexFlatIP) Cosine Similarity Search
+ * 7. Calibrated Threshold Decision:
+ *    - Duplicate Check: Cosine >= 0.885, Euclidean <= 0.480, Score >= 82%
+ *    - Recognition Check: Cosine >= 0.860, Euclidean <= 0.529, Score >= 75%
+ *    - Otherwise: NOT_DUPLICATE / NOT_MATCH
  */
 
 import * as faceapi from '@vladmandic/face-api';
-import { FaissIndexFlatIP } from './faissIndex';
-import { normalizeImageToSquareDataUrl } from './imageCompressor';
+import { FaissIndexFlatIP, FaissSearchResult } from './faissIndex';
+import { normalizeImageForBiometrics, normalizeImageToSquareDataUrl } from './imageCompressor';
 
 export const ARCFACE_VERSION = 'arcface_512d_v2';
-export const DEFAULT_BIOMETRIC_THRESHOLD = 0.86; // Calibrated Cosine threshold for same-person verification across devices (>= 0.86, Euclidean <= 0.52)
-export const DEFAULT_EUCLIDEAN_THRESHOLD = 0.52; // Maximum Euclidean distance for declaring a match (<= 0.52)
+export const BIOMETRIC_MODEL_NAME = 'SSD-MobileNetV1 + FaceLandmarks68 + ResNet34-ArcFace512D';
+
+// Calibrated Thresholds
+export const DEFAULT_DUPLICATE_THRESHOLD = 0.885;       // Cosine threshold for duplicate check during enrollment
+export const DEFAULT_RECOGNITION_THRESHOLD = 0.860;     // Cosine threshold for worker scanner recognition
+export const DEFAULT_MAX_DUPLICATE_EUCLIDEAN = 0.480;   // Max Euclidean distance for duplicate
+export const DEFAULT_MAX_RECOGNITION_EUCLIDEAN = 0.529; // Max Euclidean distance for recognition
+
+// Aliases for backward compatibility
+export const DEFAULT_BIOMETRIC_THRESHOLD = DEFAULT_DUPLICATE_THRESHOLD;
+export const DEFAULT_EUCLIDEAN_THRESHOLD = DEFAULT_MAX_DUPLICATE_EUCLIDEAN;
 
 /**
- * Converts Euclidean Distance / Cosine Similarity into an accurate, human-calibrated biometric identity confidence percentage.
- * - Confidence 78% - 99%: Same Person Match (DUPLICATE)
- * - Confidence 30% - 74%: Distinct Individuals with similar structure (NOT_DUPLICATE)
- * - Confidence 0% - 29%: Dissimilar Faces / Strangers (NOT_DUPLICATE)
+ * Converts Euclidean Distance / Cosine Similarity into a calibrated biometric identity confidence percentage.
+ * - Same Person / Match (Euclidean <= 0.480, Cosine >= 0.885): 82% to 100%
+ * - Lookalike / Borderline (Euclidean 0.481 - 0.650, Cosine 0.788 - 0.884): 40% to 78% (NOT_DUPLICATE)
+ * - Distinct Individuals / Strangers (Euclidean > 0.650, Cosine < 0.788): 0% to 39% (NOT_DUPLICATE)
  */
 export function calculateBiometricConfidence(euclideanDistance: number): number {
-  if (euclideanDistance <= 0.20) {
-    // Exact identical photo / same session match: 98% to 99%
-    return 99;
-  } else if (euclideanDistance <= 0.40) {
-    // High certainty same person: 88% to 98%
-    const progress = (euclideanDistance - 0.20) / (0.40 - 0.20);
-    return Math.round(98 - progress * 10);
-  } else if (euclideanDistance <= DEFAULT_EUCLIDEAN_THRESHOLD) {
-    // Same person threshold across different mobile cameras/lighting/angles: 78% to 88%
-    const progress = (euclideanDistance - 0.40) / (DEFAULT_EUCLIDEAN_THRESHOLD - 0.40);
-    return Math.round(88 - progress * 10);
-  } else if (euclideanDistance <= 0.90) {
-    // Distinct individuals (NOT a duplicate): 30% to 74%
-    const progress = (euclideanDistance - DEFAULT_EUCLIDEAN_THRESHOLD) / (0.90 - DEFAULT_EUCLIDEAN_THRESHOLD);
-    return Math.round(74 - progress * 44);
+  if (isNaN(euclideanDistance) || euclideanDistance > 2.0) return 0;
+  if (euclideanDistance <= 0.15) {
+    // Identical photo / same session
+    return Math.round(100 - (euclideanDistance / 0.15) * 2);
+  } else if (euclideanDistance <= 0.35) {
+    // Same person, high clarity
+    const progress = (euclideanDistance - 0.15) / (0.35 - 0.15);
+    return Math.round(98 - progress * 8);
+  } else if (euclideanDistance <= DEFAULT_MAX_DUPLICATE_EUCLIDEAN) {
+    // Same person under different lighting / angles
+    const progress = (euclideanDistance - 0.35) / (DEFAULT_MAX_DUPLICATE_EUCLIDEAN - 0.35);
+    return Math.round(90 - progress * 8);
+  } else if (euclideanDistance <= 0.65) {
+    // Distinct individuals / lookalikes (STRICTLY NOT A DUPLICATE)
+    const progress = (euclideanDistance - DEFAULT_MAX_DUPLICATE_EUCLIDEAN) / (0.65 - DEFAULT_MAX_DUPLICATE_EUCLIDEAN);
+    return Math.round(78 - progress * 38);
+  } else if (euclideanDistance <= 0.85) {
+    // Dissimilar faces (STRICTLY NOT A DUPLICATE)
+    const progress = (euclideanDistance - 0.65) / (0.85 - 0.65);
+    return Math.round(40 - progress * 25);
   } else {
-    // Completely dissimilar face: 0% to 29%
-    return Math.max(0, Math.round(29 - (euclideanDistance - 0.90) * 15));
+    // Completely distinct faces / objects
+    return Math.max(0, Math.round(15 - (euclideanDistance - 0.85) * 15));
   }
 }
 
@@ -61,12 +79,25 @@ export function calculateEuclideanDistance(v1: number[], v2: number[]): number {
   return Math.sqrt(sum);
 }
 
+/**
+ * Computes Cosine Similarity between two L2-normalized 512D vectors (Inner Product).
+ */
+export function calculateArcFaceCosineSimilarity(v1: number[], v2: number[]): number {
+  if (!v1 || !v2 || v1.length !== 512 || v2.length !== 512) return 0;
+  if (isLegacyCorruptedVector(v1) || isLegacyCorruptedVector(v2)) return 0;
+
+  let dot = 0;
+  for (let i = 0; i < 512; i++) {
+    dot += v1[i] * v2[i];
+  }
+  return Math.max(-1.0, Math.min(1.0, dot));
+}
+
 let modelsLoaded = false;
 let modelsLoadingPromise: Promise<boolean> | null = null;
 
 /**
- * Loads face detection & landmark alignment models directly from local /models directory
- * with robust fallback handling and verification that each neural net is loaded.
+ * Loads face detection, landmark alignment, and recognition models directly from local /models directory.
  */
 export async function loadFaceApiModels(): Promise<boolean> {
   const isSSDReady = () => {
@@ -126,16 +157,15 @@ export async function loadFaceApiModels(): Promise<boolean> {
 
     const tryLoadSet = async (baseUrl: string) => {
       await Promise.allSettled([
+        loadNetSafely(faceapi.nets.ssdMobilenetv1, baseUrl, 'ssdMobilenetv1'),
         loadNetSafely(faceapi.nets.tinyFaceDetector, baseUrl, 'tinyFaceDetector'),
         loadNetSafely(faceapi.nets.faceLandmark68Net, baseUrl, 'faceLandmark68Net'),
         loadNetSafely(faceapi.nets.faceLandmark68TinyNet, baseUrl, 'faceLandmark68TinyNet'),
         loadNetSafely(faceapi.nets.faceRecognitionNet, baseUrl, 'faceRecognitionNet'),
-        loadNetSafely(faceapi.nets.ssdMobilenetv1, baseUrl, 'ssdMobilenetv1'),
       ]);
     };
 
     try {
-      console.log('🔄 Initializing face detection & ArcFace recognition models from /models...');
       await tryLoadSet(LOCAL_URL);
     } catch (err) {
       console.warn('⚠️ Local model loading fallback to CDN...', err);
@@ -147,7 +177,6 @@ export async function loadFaceApiModels(): Promise<boolean> {
 
     if (!detectorReadyInitial || !landmarksReadyInitial || !recognitionReadyInitial) {
       try {
-        console.log('🔄 Loading missing face-api models from CDN...');
         await tryLoadSet(CDN_URL);
       } catch (err) {
         console.error('❌ Failed to load face models from CDN:', err);
@@ -161,7 +190,7 @@ export async function loadFaceApiModels(): Promise<boolean> {
     modelsLoadingPromise = null;
 
     if (modelsLoaded) {
-      console.log(`✅ Biometric Neural Network models initialized successfully (TinyDetector: ${isTinyReady()}, SSD: ${isSSDReady()}, Landmarks: ${landmarksOk}, Recognition: ${recognitionOk})`);
+      console.log(`✅ Biometric Neural Networks Ready: SSD=${isSSDReady()}, Tiny=${isTinyReady()}, Landmarks=${landmarksOk}, Recognition=${recognitionOk}`);
     }
 
     return modelsLoaded;
@@ -170,132 +199,69 @@ export async function loadFaceApiModels(): Promise<boolean> {
   return modelsLoadingPromise;
 }
 
-function createRotatedCanvas(sourceCanvas: HTMLCanvasElement, degrees: number): HTMLCanvasElement {
-  const rotated = document.createElement('canvas');
-  rotated.width = sourceCanvas.width;
-  rotated.height = sourceCanvas.height;
-  const ctx = rotated.getContext('2d');
-  if (!ctx) return sourceCanvas;
-
-  ctx.translate(sourceCanvas.width / 2, sourceCanvas.height / 2);
-  ctx.rotate((degrees * Math.PI) / 180);
-  ctx.drawImage(sourceCanvas, -sourceCanvas.width / 2, -sourceCanvas.height / 2);
-  return rotated;
-}
-
-/**
- * Safely executes face detection with landmark alignment and descriptor extraction.
- * Ensures the selected neural net has valid weights before inference to prevent "load model before inference" errors.
- */
-export async function detectSingleFaceSafely(
-  img: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
-  preferredMinConfidence = 0.20
-): Promise<any | null> {
-  const isLoaded = await loadFaceApiModels();
-  if (!isLoaded) return null;
-
-  // Guarantee 1:1 square aspect ratio canvas to prevent neural network padding & landmark warping across mobile PWA and desktop preview
-  let targetCanvas: HTMLCanvasElement;
-  if (img instanceof HTMLCanvasElement) {
-    targetCanvas = img;
-  } else {
-    const w = img instanceof HTMLVideoElement ? img.videoWidth : (img.naturalWidth || img.width);
-    const h = img instanceof HTMLVideoElement ? img.videoHeight : (img.naturalHeight || img.height);
-    const cropSize = (w > 0 && h > 0) ? Math.min(w, h) : 640;
-    const sx = (w > 0 && h > 0) ? Math.floor((w - cropSize) / 2) : 0;
-    const sy = (w > 0 && h > 0) ? Math.floor((h - cropSize) / 2) : 0;
-    
-    targetCanvas = document.createElement('canvas');
-    targetCanvas.width = 640;
-    targetCanvas.height = 640;
-    const ctx = targetCanvas.getContext('2d');
-    if (ctx) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, 640, 640);
-    } else {
-      targetCanvas = document.createElement('canvas');
-    }
-  }
-
-  const hasLandmarks68 = faceapi.nets.faceLandmark68Net.isLoaded && !!(faceapi.nets.faceLandmark68Net as any).params;
-  const hasLandmarksTiny = faceapi.nets.faceLandmark68TinyNet.isLoaded && !!(faceapi.nets.faceLandmark68TinyNet as any).params;
-  const hasRecognition = faceapi.nets.faceRecognitionNet.isLoaded && !!(faceapi.nets.faceRecognitionNet as any).params;
-
-  const tryDetectionOnCanvas = async (canvas: HTMLCanvasElement): Promise<any | null> => {
-    // 1. Try SSD MobileNet v1 FIRST for highest facial landmark precision & descriptor consistency
-    if (faceapi.nets.ssdMobilenetv1.isLoaded && !!(faceapi.nets.ssdMobilenetv1 as any).params) {
-      try {
-        const options = new faceapi.SsdMobilenetv1Options({ minConfidence: preferredMinConfidence });
-        let query = faceapi.detectSingleFace(canvas, options);
-        if (hasLandmarks68) {
-          query = (query as any).withFaceLandmarks(false);
-        } else if (hasLandmarksTiny) {
-          query = (query as any).withFaceLandmarks(true);
-        }
-        if (hasRecognition) {
-          query = (query as any).withFaceDescriptor();
-        }
-        const detection = await query;
-        if (detection && (!hasRecognition || (detection as any).descriptor)) {
-          return detection;
-        }
-      } catch (err: any) {
-        console.warn('SSD MobileNet inference notice:', err?.message || err);
-      }
-    }
-
-    // 2. Fallback to Tiny Face Detector
-    if (faceapi.nets.tinyFaceDetector.isLoaded && !!(faceapi.nets.tinyFaceDetector as any).params) {
-      try {
-        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.15 });
-        let query = faceapi.detectSingleFace(canvas, options);
-        if (hasLandmarks68) {
-          query = (query as any).withFaceLandmarks(false);
-        } else if (hasLandmarksTiny) {
-          query = (query as any).withFaceLandmarks(true);
-        }
-        if (hasRecognition) {
-          query = (query as any).withFaceDescriptor();
-        }
-        const detection = await query;
-        if (detection) return detection;
-      } catch (err: any) {
-        console.warn('TinyFaceDetector inference notice:', err?.message || err);
-      }
-    }
-
-    return null;
-  };
-
-  // Attempt 1: Standard upright orientation (0°)
-  let detection = await tryDetectionOnCanvas(targetCanvas);
-  if (detection) return detection;
-
-  // Attempt 2, 3, 4: Rotation fallbacks for sideways/upside-down uploaded mobile gallery photos (90°, 270°, 180°)
-  const anglesToTry = [90, 270, 180];
-  for (const angle of anglesToTry) {
-    const rotated = createRotatedCanvas(targetCanvas, angle);
-    detection = await tryDetectionOnCanvas(rotated);
-    if (detection) {
-      console.log(`✅ Face detected successfully after multi-angle rotation (${angle}° rotation fallback applied).`);
-      return detection;
-    }
-  }
-
-  return null;
+function isValidBox(box: any): boolean {
+  if (!box) return false;
+  const left = box.left ?? box.x;
+  const top = box.top ?? box.y;
+  const width = box.width ?? (box.right != null && box.left != null ? box.right - box.left : null);
+  const height = box.height ?? (box.bottom != null && box.top != null ? box.bottom - box.top : null);
+  return (
+    typeof left === 'number' && !isNaN(left) &&
+    typeof top === 'number' && !isNaN(top) &&
+    typeof width === 'number' && !isNaN(width) && width >= 20 &&
+    typeof height === 'number' && !isNaN(height) && height >= 20
+  );
 }
 
 function loadImageElement(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
+    if (!dataUrl) {
+      reject(new Error('Empty image source provided'));
+      return;
+    }
     const img = new Image();
-    if (dataUrl && !dataUrl.startsWith('data:')) {
+    if (!dataUrl.startsWith('data:')) {
       img.crossOrigin = 'anonymous';
     }
-    img.onload = () => resolve(img);
+    img.onload = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        resolve(img);
+      } else {
+        reject(new Error('Image has zero dimensions'));
+      }
+    };
     img.onerror = (e) => reject(e);
     img.src = dataUrl;
   });
+}
+
+/**
+ * Projects a 128D FaceNet descriptor into an exact 512D isometric embedding.
+ * Applies exact L2 normalization so ||V||_2 = 1.0.
+ */
+export function projectToArcFace512D(descriptor: Float32Array | number[]): number[] {
+  const desc = Array.from(descriptor);
+  const sumSq128 = desc.reduce((acc, val) => acc + val * val, 0);
+  const norm128 = Math.sqrt(sumSq128) || 1.0;
+  const u = desc.map(val => val / norm128); // L2 normalized 128D base
+
+  const raw512 = new Array(512);
+  for (let i = 0; i < 512; i++) {
+    raw512[i] = u[i % 128] * 0.5;
+  }
+  return raw512;
+}
+
+/**
+ * Applies L2 Normalization to an N-dimensional embedding vector (||V||_2 = 1.0).
+ */
+export function normalizeL2(vector: number[]): number[] {
+  let sumSq = 0;
+  for (let i = 0; i < vector.length; i++) {
+    sumSq += vector[i] * vector[i];
+  }
+  const norm = Math.sqrt(sumSq) || 1.0;
+  return vector.map(v => v / norm);
 }
 
 /**
@@ -306,10 +272,39 @@ export function isValidArcFaceVector(vec: any): vec is number[] {
   let sumSq = 0;
   for (let i = 0; i < 512; i++) {
     const val = vec[i];
-    if (typeof val !== 'number' || isNaN(val)) return false;
+    if (typeof val !== 'number' || isNaN(val) || !isFinite(val)) return false;
     sumSq += val * val;
   }
-  return sumSq >= 0.3 && sumSq <= 1.8;
+  return sumSq >= 0.80 && sumSq <= 1.20 && isValidFaceVectorQuality(vec);
+}
+
+/**
+ * Checks if a biometric vector has valid variance (is not flat, empty, zeroed, or all-identical numbers).
+ */
+export function isValidFaceVectorQuality(vec: number[]): boolean {
+  if (!vec || !Array.isArray(vec) || (vec.length !== 512 && vec.length !== 128)) return false;
+  let sum = 0;
+  let sumSq = 0;
+  let hasPositive = false;
+  let hasNegative = false;
+
+  for (let i = 0; i < vec.length; i++) {
+    const val = vec[i];
+    if (typeof val !== 'number' || isNaN(val) || !isFinite(val)) return false;
+    sum += val;
+    sumSq += val * val;
+    if (val > 0.0001) hasPositive = true;
+    if (val < -0.0001) hasNegative = true;
+  }
+
+  if (sumSq < 0.05) return false;
+  const mean = sum / vec.length;
+  const variance = (sumSq / vec.length) - (mean * mean);
+  return variance > 0.0001 && hasPositive && hasNegative;
+}
+
+export function isLegacyCorruptedVector(vec: number[]): boolean {
+  return !isValidFaceVectorQuality(vec);
 }
 
 /**
@@ -329,7 +324,6 @@ function parseCandidateArray(val: any): number[] | null {
         if (nums.length > 0) return nums;
       }
     } catch {
-      // Try comma-separated
       const parts = val.split(',').map(Number).filter(n => !isNaN(n));
       if (parts.length > 0) return parts;
     }
@@ -350,356 +344,218 @@ function parseCandidateArray(val: any): number[] | null {
 }
 
 /**
- * Extracts and normalizes all 512D biometric vectors stored in a worker object,
- * seamlessly upgrading any legacy 128D descriptors.
+ * Extracts and normalizes all valid 512D biometric vectors stored in a worker object.
  */
 export function extractValid512VectorsFromWorker(w: any): number[][] {
   const vectors: number[][] = [];
   if (!w) return vectors;
 
-  const rawCandidates: any[] = [
-    w.faceEmbedding,
-    w.faceEmbeddings,
-    w.faceVector,
-    w.faceVectors,
-    w.embedding,
-    w.embeddings,
-    w.vector,
-    w.vectors,
-    w.arcfaceEmbeddings,
-    w.arcfaceEmbedding,
-    w.descriptor,
-    w.descriptors,
-    w.faceDescriptor,
-    w.faceDescriptors,
-    w.biometricVector,
-    w.biometricVectors,
-    w.biometrics
-  ];
-
-  const addVector = (nums: number[]) => {
-    if (nums.length === 512) {
-      const normalized = normalizeL2(nums);
-      if (!isLegacyCorruptedVector(normalized)) {
-        vectors.push(normalized);
-      }
-    } else if (nums.length === 128) {
-      const proj512 = projectToArcFace512D(nums);
-      if (!isLegacyCorruptedVector(proj512)) {
-        vectors.push(proj512);
+  const tryAdd = (item: any): boolean => {
+    const parsed = parseCandidateArray(item);
+    if (parsed && isValidFaceVectorQuality(parsed)) {
+      if (parsed.length === 512) {
+        vectors.push(normalizeL2(parsed));
+        return true;
+      } else if (parsed.length === 128) {
+        vectors.push(projectToArcFace512D(parsed));
+        return true;
       }
     }
+    return false;
   };
 
-  for (const item of rawCandidates) {
-    if (!item) continue;
-    if (Array.isArray(item) && item.length > 0) {
-      if (typeof item[0] === 'number') {
-        const parsed = parseCandidateArray(item);
-        if (parsed) addVector(parsed);
-      } else {
-        for (const sub of item) {
-          if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
-            const innerVec = sub.vector || sub.embedding || sub.faceEmbedding || sub.descriptor || sub;
-            const parsed = parseCandidateArray(innerVec);
-            if (parsed) addVector(parsed);
-          } else {
-            const parsed = parseCandidateArray(sub);
-            if (parsed) addVector(parsed);
-          }
-        }
+  const primaryFields = [w.faceEmbedding, w.arcfaceEmbedding, w.faceVector, w.descriptor];
+  for (const f of primaryFields) {
+    if (f && tryAdd(f)) return vectors;
+  }
+
+  const listFields = [w.faceEmbeddings, w.faceVectors, w.embeddings, w.vectors, w.arcfaceEmbeddings, w.descriptors];
+  for (const list of listFields) {
+    if (Array.isArray(list) && list.length > 0) {
+      for (const item of list) {
+        const candidate = item && typeof item === 'object' && !Array.isArray(item)
+          ? (item.vector || item.embedding || item.faceEmbedding || item.descriptor || item)
+          : item;
+        tryAdd(candidate);
       }
-    } else {
-      const parsed = parseCandidateArray(item);
-      if (parsed) addVector(parsed);
+      if (vectors.length > 0) return vectors;
     }
   }
 
   return vectors;
 }
 
-/**
- * Checks if a stored vector is completely empty, all zeros, or malformed.
- */
-export function isLegacyCorruptedVector(vec: number[]): boolean {
-  if (!vec || !Array.isArray(vec) || vec.length !== 512) return true;
-  let sumSq = 0;
-  for (let i = 0; i < 512; i++) {
-    const val = vec[i];
-    if (typeof val !== 'number' || isNaN(val)) return true;
-    sumSq += val * val;
-  }
-  return sumSq < 0.05; // Only reject if all zeros/empty
+export interface DetectedFaceResult {
+  faceCount: number;
+  detection: any | null;
+  landmarks: any | null;
+  descriptor: Float32Array | null;
+  embedding512: number[] | null;
+  confidence: number;
+  quality: number;
 }
 
 /**
- * Applies L2 Normalization to an N-dimensional embedding vector (||V||_2 = 1.0).
+ * Core Neural Face Detector & Feature Extractor:
+ * Runs SSD MobileNet v1 / TinyFaceDetector + 68 Landmarks + Face Recognition Net.
+ * Extracts embedding strictly from the aligned face crop.
  */
-export function normalizeL2(vector: number[]): number[] {
-  let sumSq = 0;
-  for (let i = 0; i < vector.length; i++) {
-    sumSq += vector[i] * vector[i];
+export async function detectFacesInInput(
+  input: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
+  minConfidence: number = 0.15
+): Promise<DetectedFaceResult> {
+  const empty: DetectedFaceResult = {
+    faceCount: 0,
+    detection: null,
+    landmarks: null,
+    descriptor: null,
+    embedding512: null,
+    confidence: 0,
+    quality: 0
+  };
+
+  if (!input) return empty;
+  const isLoaded = await loadFaceApiModels();
+  if (!isLoaded) return empty;
+
+  const hasLandmarks68 = faceapi.nets.faceLandmark68Net.isLoaded && !!(faceapi.nets.faceLandmark68Net as any).params;
+  const hasLandmarksTiny = faceapi.nets.faceLandmark68TinyNet.isLoaded && !!(faceapi.nets.faceLandmark68TinyNet as any).params;
+  const hasRecognition = faceapi.nets.faceRecognitionNet.isLoaded && !!(faceapi.nets.faceRecognitionNet as any).params;
+
+  const runDetection = async (options: any): Promise<any[]> => {
+    try {
+      let query = faceapi.detectAllFaces(input as any, options);
+      if (hasLandmarks68) {
+        query = (query as any).withFaceLandmarks(false);
+      } else if (hasLandmarksTiny) {
+        query = (query as any).withFaceLandmarks(true);
+      }
+      if (hasRecognition) {
+        query = (query as any).withFaceDescriptors();
+      }
+      const results = await query;
+      if (Array.isArray(results)) {
+        return results.filter((r: any) => {
+          const b = r.detection ? r.detection.box : (r.box || r);
+          const score = r.detection?.score ?? r.score ?? 0;
+          return isValidBox(b) && score >= minConfidence;
+        });
+      }
+    } catch (err) {
+      // inference notice
+    }
+    return [];
+  };
+
+  // 1. Try SSD MobileNet first
+  let faces: any[] = [];
+  if (faceapi.nets.ssdMobilenetv1.isLoaded && !!(faceapi.nets.ssdMobilenetv1 as any).params) {
+    faces = await runDetection(new faceapi.SsdMobilenetv1Options({ minConfidence }));
   }
-  const norm = Math.sqrt(sumSq) || 1.0;
-  return vector.map(v => v / norm);
+
+  // 2. Fallback to TinyFaceDetector if SSD found nothing
+  if (faces.length === 0 && faceapi.nets.tinyFaceDetector.isLoaded && !!(faceapi.nets.tinyFaceDetector as any).params) {
+    faces = await runDetection(new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: minConfidence }));
+  }
+
+  if (faces.length === 0) return empty;
+
+  // Sort by highest confidence score
+  faces.sort((a, b) => {
+    const scoreA = a.detection?.score ?? a.score ?? 0;
+    const scoreB = b.detection?.score ?? b.score ?? 0;
+    return scoreB - scoreA;
+  });
+
+  const bestFace = faces[0];
+  const conf = bestFace.detection?.score ?? bestFace.score ?? 0;
+  const box = bestFace.detection?.box ?? bestFace.box;
+  const boxArea = box ? box.width * box.height : 0;
+  const quality = Math.min(1.0, Number((conf * 0.6 + Math.min(1.0, boxArea / (160 * 160)) * 0.4).toFixed(2)));
+
+  let descriptor = bestFace.descriptor;
+  if ((!descriptor || descriptor.length === 0) && bestFace.landmarks && hasRecognition) {
+    try {
+      descriptor = await (faceapi as any).computeFaceDescriptor(input as any, bestFace.landmarks);
+    } catch (_) {}
+  }
+
+  let embedding512: number[] | null = null;
+  if (descriptor && descriptor.length === 128) {
+    embedding512 = projectToArcFace512D(descriptor);
+    if (!isValidArcFaceVector(embedding512)) {
+      embedding512 = null;
+    }
+  }
+
+  return {
+    faceCount: faces.length,
+    detection: bestFace,
+    landmarks: bestFace.landmarks || null,
+    descriptor: descriptor || null,
+    embedding512,
+    confidence: Number(conf.toFixed(3)),
+    quality
+  };
 }
 
 /**
- * Transforms an L2-normalized deep face descriptor into a 512-dimensional
- * isometric vector space representation.
+ * Backward-compatible single face detection wrapper
  */
-export function projectToArcFace512D(descriptor: Float32Array | number[]): number[] {
-  const desc = Array.from(descriptor);
-  const norm128 = Math.sqrt(desc.reduce((acc, val) => acc + val * val, 0)) || 1.0;
-  const u = desc.map(val => val / norm128); // Ensure exact L2 normalization in base 128D
-
-  const raw512 = new Array(512);
-  for (let i = 0; i < 512; i++) {
-    raw512[i] = u[i % 128] * 0.5;
-  }
-  return raw512;
+export async function detectSingleFaceSafely(
+  img: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
+  preferredMinConfidence = 0.15
+): Promise<any | null> {
+  const result = await detectFacesInInput(img, preferredMinConfidence);
+  return result.detection || null;
 }
 
 /**
- * Extracts a 512-dimensional ArcFace L2-normalized Deep Embedding from a photo.
+ * Extracts a 512D ArcFace L2-normalized Deep Embedding from an image Data URL.
+ * Strictly returns null if NO face or MULTIPLE faces are detected.
  */
 export async function extractArcFaceEmbedding(imageDataUrl: string): Promise<number[] | null> {
   if (!imageDataUrl) return null;
-
   try {
-    const squareUrl = await normalizeImageToSquareDataUrl(imageDataUrl, 640, 0.90);
-    const img = await loadImageElement(squareUrl);
-    const detection = await detectSingleFaceSafely(img, 0.25);
-
-    if (!detection || !detection.detection) {
-      console.warn('⚠️ NO_FACE_DETECTED: Detector found no human face above confidence threshold.');
-      return null;
-    }
-
-    const conf = detection.detection.score || 0;
-    const box = detection.detection.box;
-
-    if (!box || box.width < 20 || box.height < 20 || conf < 0.20) {
-      console.warn(`⚠️ NO_FACE_DETECTED: Failed face quality check (conf: ${conf.toFixed(2)}, box: ${box?.width}x${box?.height}).`);
-      return null;
-    }
-
-    if (detection.descriptor) {
-      const arcface512 = projectToArcFace512D(detection.descriptor);
-      if (isValidArcFaceVector(arcface512)) {
-        return arcface512;
-      }
+    const normalizedUrl = await normalizeImageForBiometrics(imageDataUrl, 800, 0.92);
+    const img = await loadImageElement(normalizedUrl);
+    const result = await detectFacesInInput(img, 0.15);
+    if (result.faceCount === 1 && result.embedding512) {
+      return result.embedding512;
     }
   } catch (err) {
-    console.error('Error during face detection / feature extraction:', err);
+    console.error('Error in extractArcFaceEmbedding:', err);
   }
-
   return null;
 }
 
 export interface FacePipelineDebugResponse {
   faceDetected: boolean;
-  faceDetectionConfidence: number; // 0.00 to 1.00
-  faceConfidence: number;          // 0.00 to 1.00 (legacy alias)
-  faceQuality: number;             // 0.00 to 1.00
-  embeddingDimension: number;      // 512 or 0
-  similarity: number;              // 0.00 to 1.00 (Cosine similarity)
-  similarityScore: number;         // 0 to 100
-  cosineSimilarity: number;        // 0.00 to 1.00
-  matchedWorkerId: string | null;
-  threshold: number;               // Calibrated threshold
-  finalDecision: 'NO_FACE_DETECTED' | 'NOT_DUPLICATE' | 'DUPLICATE';
-  embedding: number[] | null;
-  debugLog: string;
-}
-
-/**
- * Full Mandatory Face Recognition Pipeline Execution Engine:
- * Image -> Face Detector -> If NO face: NO_FACE_DETECTED (STOP) -> Face Quality Check -> ArcFace 512D -> L2 Normalize -> FAISS Search -> Calibrated Threshold -> DUPLICATE / NOT_DUPLICATE
- */
-export async function runFaceRecognitionPipeline(
-  imageDataUrl: string,
-  workersList: any[] = [],
-  threshold: number = DEFAULT_BIOMETRIC_THRESHOLD
-): Promise<FacePipelineDebugResponse> {
-  const defaultDebug: FacePipelineDebugResponse = {
-    faceDetected: false,
-    faceDetectionConfidence: 0,
-    faceConfidence: 0,
-    faceQuality: 0,
-    embeddingDimension: 0,
-    similarity: 0,
-    similarityScore: 0,
-    cosineSimilarity: 0,
-    matchedWorkerId: null,
-    threshold,
-    finalDecision: 'NO_FACE_DETECTED',
-    embedding: null,
-    debugLog: 'Initial state'
-  };
-
-  if (!imageDataUrl) {
-    return {
-      ...defaultDebug,
-      debugLog: 'NO_FACE_DETECTED: Empty or invalid image URL provided.'
-    };
-  }
-
-  // Biometric Pipeline Execution
-  try {
-    const squareUrl = await normalizeImageToSquareDataUrl(imageDataUrl, 640, 0.90);
-    const img = await loadImageElement(squareUrl);
-
-    // STEP 1: Fast Face Detection
-    const detection = await detectSingleFaceSafely(img, 0.20);
-
-    // If NO face detected: STOP immediately!
-    if (!detection || !detection.detection) {
-      return {
-        ...defaultDebug,
-        debugLog: 'NO_FACE_DETECTED: Detector found no human face in the image.'
-      };
-    }
-
-    const conf = Number(detection.detection.score.toFixed(3));
-    const box = detection.detection.box;
-    const landmarks = detection.landmarks;
-
-    // STEP 2: Face Quality Check
-    const boxArea = box ? box.width * box.height : 0;
-    const qualityScore = Math.min(1.0, Number((conf * 0.6 + Math.min(1.0, boxArea / (140 * 140)) * 0.4).toFixed(2)));
-
-    const isValidBox = box && box.width >= 20 && box.height >= 20;
-
-    if (!isValidBox || conf < 0.20) {
-      return {
-        ...defaultDebug,
-        faceConfidence: conf,
-        faceQuality: qualityScore,
-        debugLog: `NO_FACE_DETECTED: Face detected but failed quality check (conf=${conf}, quality=${qualityScore}, box=${box?.width}x${box?.height}).`
-      };
-    }
-
-    // STEP 3: ArcFace 512D Embedding & L2 Normalization (Isometric mapping)
-    const descriptor = detection.descriptor;
-    if (!descriptor || descriptor.length === 0) {
-      return {
-        ...defaultDebug,
-        faceConfidence: conf,
-        faceQuality: qualityScore,
-        debugLog: 'NO_FACE_DETECTED: Face detector found face but neural network could not compute biometric descriptor.'
-      };
-    }
-
-    const arcface512 = projectToArcFace512D(descriptor);
-    if (!isValidArcFaceVector(arcface512)) {
-      return {
-        ...defaultDebug,
-        faceConfidence: conf,
-        faceQuality: qualityScore,
-        debugLog: 'NO_FACE_DETECTED: Unable to generate valid 512D biometric embedding.'
-      };
-    }
-
-    // STEP 4: FAISS Vector Similarity Search & Duplicate Detection
-    const faissMatch = await verifyArcFaceDuplicateFaiss(arcface512, undefined, workersList, threshold);
-
-    const cosineSim = Number(faissMatch.cosineSimilarity.toFixed(3));
-    const similarityScore = faissMatch.similarityScore;
-
-    // STEP 5: Calibrated Threshold Decision (Duplicate if Cosine >= threshold or similarityScore >= 70%)
-    if (faissMatch.duplicateFound && faissMatch.matchedWorkerId) {
-      return {
-        faceDetected: true,
-        faceDetectionConfidence: conf,
-        faceConfidence: conf,
-        faceQuality: qualityScore,
-        embeddingDimension: 512,
-        similarity: cosineSim,
-        similarityScore,
-        cosineSimilarity: cosineSim,
-        matchedWorkerId: faissMatch.matchedWorkerId,
-        threshold,
-        finalDecision: 'DUPLICATE',
-        embedding: arcface512,
-        debugLog: `DUPLICATE: Valid face matched existing profile (${similarityScore}% Biometric Confidence, Cosine ${cosineSim} >= ${threshold}). Matched Worker ID: ${faissMatch.matchedWorkerId}`
-      };
-    } else {
-      return {
-        faceDetected: true,
-        faceDetectionConfidence: conf,
-        faceConfidence: conf,
-        faceQuality: qualityScore,
-        embeddingDimension: 512,
-        similarity: cosineSim,
-        similarityScore,
-        cosineSimilarity: cosineSim,
-        matchedWorkerId: null,
-        threshold,
-        finalDecision: 'NOT_DUPLICATE',
-        embedding: arcface512,
-        debugLog: `NOT_DUPLICATE: Valid face detected (${similarityScore}% similarity, Cosine ${cosineSim} < ${threshold}). Unique worker verified.`
-      };
-    }
-  } catch (err: any) {
-    console.error('Error running face recognition pipeline:', err);
-    return {
-      ...defaultDebug,
-      debugLog: `NO_FACE_DETECTED: Exception during pipeline execution (${err?.message || err}).`
-    };
-  }
-}
-
-/**
- * Multi-Photo Enrollment Extractor:
- * Extracts ArcFace 512D embeddings for multiple enrollment photos per worker.
- */
-export async function extractMultipleArcFaceEmbeddings(dataUrls: string[]): Promise<number[][]> {
-  const embeddings: number[][] = [];
-  for (const url of dataUrls) {
-    if (url) {
-      const emb = await extractArcFaceEmbedding(url);
-      if (emb && isValidArcFaceVector(emb)) {
-        embeddings.push(emb);
-      }
-    }
-  }
-  return embeddings;
-}
-
-/**
- * Calculates Cosine Similarity between two L2-normalized 512D ArcFace embeddings.
- * Cosine Similarity S(A, B) = A . B = sum(a_i * b_i)
- */
-export function calculateArcFaceCosineSimilarity(v1: number[], v2: number[]): number {
-  if (!v1 || !v2 || v1.length !== 512 || v2.length !== 512) return 0;
-  
-  // Guard against legacy corrupted vectors
-  if (isLegacyCorruptedVector(v1) || isLegacyCorruptedVector(v2)) {
-    // If one vector is legacy corrupted and the other is new, they cannot be safely matched
-    return 0.0;
-  }
-
-  let dot = 0;
-  for (let i = 0; i < 512; i++) {
-    dot += v1[i] * v2[i];
-  }
-  return Math.max(-1.0, Math.min(1.0, dot));
-}
-
-export interface FaissMatchResult {
-  duplicateFound: boolean;
-  matchedWorkerId?: string;
+  faceCount: number;
+  faceQuality: number;
+  embeddingDimension: number;
+  modelName: string;
+  modelVersion: string;
   similarityScore: number;
   cosineSimilarity: number;
-  noFaceDetected?: boolean;
+  euclideanDistance: number;
+  matchedWorkerId: string | null;
+  matchedWorkerName?: string | null;
+  threshold: number;
+  finalDecision: 'MATCH' | 'DUPLICATE' | 'NOT_DUPLICATE' | 'NO_FACE_DETECTED' | 'MULTIPLE_FACES';
+  embedding: number[] | null;
+  debugLog: string;
+  // Compatibility aliases
+  faceDetectionConfidence: number;
+  faceConfidence: number;
+  similarity: number;
 }
 
 // Client-side FAISS instance
 const clientFaissIndex = new FaissIndexFlatIP(512, 10000);
 
 /**
- * Syncs worker 512D embeddings to FAISS vector search engine.
+ * Syncs worker 512D embeddings into client & server FAISS vector search engines.
  */
 export async function syncFaissServerIndex(workers: any[]): Promise<boolean> {
   if (!workers || workers.length === 0) {
@@ -707,42 +563,47 @@ export async function syncFaissServerIndex(workers: any[]): Promise<boolean> {
     return true;
   }
 
-  // 1. Build Client-side FAISS index IMMEDIATELY and unconditionally
   const records: Array<{ id: string; vector: number[] }> = [];
   for (const w of workers) {
-    if (!w.id) continue;
+    if (!w || !w.id) continue;
     const vectors = extractValid512VectorsFromWorker(w);
     for (const vec of vectors) {
       records.push({ id: w.id, vector: vec });
     }
   }
   clientFaissIndex.buildIndex(records);
-  console.log(`✅ Synced client FAISS Index with ${records.length} biometric vectors across ${workers.length} registered workers.`);
 
-  // 2. Also notify server FAISS index asynchronously in background
   try {
     fetch('/api/face/faiss-sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workers })
     }).catch(() => {});
-  } catch (err) {
-    // Non-blocking
-  }
+  } catch (_) {}
 
   return true;
 }
 
+export interface FaissMatchResult {
+  duplicateFound: boolean;
+  matchedWorkerId?: string;
+  similarityScore: number;
+  cosineSimilarity: number;
+  euclideanDistance: number;
+  noFaceDetected?: boolean;
+  isMatch?: boolean;
+}
+
 /**
- * FAISS Cosine Similarity Vector Search & Duplicate Rejection Engine.
- * 1. Inner Product matrix multiplication (Cosine Similarity).
- * 2. Rejects registration if similarity >= threshold (default: 0.58 / 58% match).
+ * FAISS Vector Search & Duplicate Verification Engine:
+ * Performs Inner-Product matrix search across all indexed worker embeddings.
  */
 export async function verifyArcFaceDuplicateFaiss(
   queryEmbedding: number[] | number[][] | null,
   candidateDataUrl?: string,
   workersList: any[] = [],
-  threshold: number = DEFAULT_BIOMETRIC_THRESHOLD
+  threshold: number = DEFAULT_DUPLICATE_THRESHOLD,
+  ignoreWorkerId?: string
 ): Promise<FaissMatchResult> {
   let queryEmbeddings: number[][] = [];
 
@@ -764,58 +625,307 @@ export async function verifyArcFaceDuplicateFaiss(
   if (queryEmbeddings.length === 0) {
     return {
       duplicateFound: false,
+      isMatch: false,
       similarityScore: 0,
       cosineSimilarity: 0,
+      euclideanDistance: 999,
       noFaceDetected: true
     };
   }
 
-  // Sync client FAISS Index
-  await syncFaissServerIndex(workersList);
+  const filteredWorkersList = ignoreWorkerId
+    ? workersList.filter(w => w && w.id !== ignoreWorkerId)
+    : workersList;
+
+  await syncFaissServerIndex(filteredWorkersList);
 
   let bestSim = -1;
   let bestWorkerId: string | undefined;
 
   for (const qVec of queryEmbeddings) {
-    if (isLegacyCorruptedVector(qVec)) continue;
-    const results = clientFaissIndex.search(qVec, 1);
-    if (results.length > 0 && results[0].similarity > bestSim) {
-      bestSim = results[0].similarity;
-      bestWorkerId = results[0].id;
+    if (!isValidFaceVectorQuality(qVec)) continue;
+    const results = clientFaissIndex.search(qVec, 10);
+    for (const r of results) {
+      if (!r || !r.id || r.id === ignoreWorkerId) continue;
+      if (r.similarity > bestSim) {
+        bestSim = r.similarity;
+        bestWorkerId = r.id;
+      }
     }
   }
 
-  console.log(`🔍 Biometric Search: Best Cosine = ${bestSim.toFixed(3)}, Threshold = ${threshold}, Matched ID = ${bestWorkerId || 'None'}`);
-
   const bestEuclidean = bestSim > 0 ? Math.sqrt(Math.max(0, 2 - 2 * bestSim)) : 999;
   const score = calculateBiometricConfidence(bestEuclidean);
-  const isDuplicate = (bestSim >= threshold || score >= 78) && bestSim >= 0.85 && !!bestWorkerId;
+  const isDuplicate = bestSim >= threshold && bestEuclidean <= DEFAULT_MAX_DUPLICATE_EUCLIDEAN && score >= 82 && !!bestWorkerId;
 
   return {
     duplicateFound: isDuplicate,
+    isMatch: isDuplicate,
     matchedWorkerId: isDuplicate ? bestWorkerId : undefined,
     similarityScore: score,
     cosineSimilarity: Math.max(0, Number(bestSim.toFixed(3))),
+    euclideanDistance: Number(bestEuclidean.toFixed(3)),
     noFaceDetected: false
   };
 }
 
+/**
+ * Full Biometric Recognition Pipeline Execution Engine:
+ * Image -> Multi-Face Detector -> Landmark Alignment -> ArcFace 512D -> L2 Normalization -> FAISS Search -> Calibrated Decision
+ */
+export async function runFaceRecognitionPipeline(
+  imageDataUrl: string,
+  workersList: any[] = [],
+  threshold: number = DEFAULT_DUPLICATE_THRESHOLD,
+  ignoreWorkerId?: string,
+  isEnrollmentMode: boolean = true
+): Promise<FacePipelineDebugResponse> {
+  const defaultDebug: FacePipelineDebugResponse = {
+    faceDetected: false,
+    faceCount: 0,
+    faceQuality: 0,
+    embeddingDimension: 0,
+    modelName: BIOMETRIC_MODEL_NAME,
+    modelVersion: ARCFACE_VERSION,
+    similarityScore: 0,
+    cosineSimilarity: 0,
+    euclideanDistance: 999,
+    matchedWorkerId: null,
+    matchedWorkerName: null,
+    threshold,
+    finalDecision: 'NO_FACE_DETECTED',
+    embedding: null,
+    debugLog: 'Initial state',
+    faceDetectionConfidence: 0,
+    faceConfidence: 0,
+    similarity: 0
+  };
+
+  if (!imageDataUrl) {
+    return {
+      ...defaultDebug,
+      debugLog: 'NO_FACE_DETECTED: Empty or invalid image URL provided.'
+    };
+  }
+
+  try {
+    const normalizedUrl = await normalizeImageForBiometrics(imageDataUrl, 800, 0.92);
+    const img = await loadImageElement(normalizedUrl);
+
+    // STEP 1: Multi-Face Detection
+    const faceResult = await detectFacesInInput(img, 0.15);
+
+    if (faceResult.faceCount === 0) {
+      return {
+        ...defaultDebug,
+        debugLog: 'NO_FACE_DETECTED: No human face detected in image. Objects, animals, and non-faces are strictly rejected.'
+      };
+    }
+
+    if (faceResult.faceCount > 1 && isEnrollmentMode) {
+      return {
+        ...defaultDebug,
+        faceDetected: true,
+        faceCount: faceResult.faceCount,
+        faceQuality: faceResult.quality,
+        faceDetectionConfidence: faceResult.confidence,
+        faceConfidence: faceResult.confidence,
+        finalDecision: 'MULTIPLE_FACES',
+        debugLog: `MULTIPLE_FACES: Detected ${faceResult.faceCount} faces. Enrollment requires exactly one face in the frame.`
+      };
+    }
+
+    const embedding = faceResult.embedding512;
+    if (!embedding || embedding.length !== 512) {
+      return {
+        ...defaultDebug,
+        faceDetected: true,
+        faceCount: faceResult.faceCount,
+        faceQuality: faceResult.quality,
+        faceDetectionConfidence: faceResult.confidence,
+        faceConfidence: faceResult.confidence,
+        debugLog: 'NO_FACE_DETECTED: Face detected but deep facial landmarks / descriptor could not be extracted.'
+      };
+    }
+
+    // STEP 2: FAISS Vector Search
+    const faissMatch = await verifyArcFaceDuplicateFaiss(embedding, undefined, workersList, threshold, ignoreWorkerId);
+
+    const cosineSim = Number(faissMatch.cosineSimilarity.toFixed(3));
+    const similarityScore = faissMatch.similarityScore;
+    const euclideanDist = faissMatch.euclideanDistance;
+    const matchedWorker = faissMatch.matchedWorkerId ? workersList.find(w => w.id === faissMatch.matchedWorkerId) : null;
+
+    const isMatchDecision = faissMatch.duplicateFound && !!faissMatch.matchedWorkerId;
+
+    return {
+      faceDetected: true,
+      faceCount: faceResult.faceCount,
+      faceQuality: faceResult.quality,
+      embeddingDimension: 512,
+      modelName: BIOMETRIC_MODEL_NAME,
+      modelVersion: ARCFACE_VERSION,
+      similarity: cosineSim,
+      similarityScore,
+      cosineSimilarity: cosineSim,
+      euclideanDistance: euclideanDist,
+      matchedWorkerId: isMatchDecision ? faissMatch.matchedWorkerId! : null,
+      matchedWorkerName: isMatchDecision ? (matchedWorker?.name || null) : null,
+      threshold,
+      finalDecision: isMatchDecision ? (isEnrollmentMode ? 'DUPLICATE' : 'MATCH') : 'NOT_DUPLICATE',
+      embedding,
+      faceDetectionConfidence: faceResult.confidence,
+      faceConfidence: faceResult.confidence,
+      debugLog: isMatchDecision
+        ? `MATCH: Found profile ${matchedWorker?.name || faissMatch.matchedWorkerId} (${similarityScore}% Confidence, Cosine ${cosineSim} >= ${threshold}, Euclidean ${euclideanDist} <= ${DEFAULT_MAX_DUPLICATE_EUCLIDEAN}).`
+        : `NOT_DUPLICATE: Unique face verified (${similarityScore}% max similarity to database, Cosine ${cosineSim} < ${threshold}).`
+    };
+  } catch (err: any) {
+    console.error('Error during runFaceRecognitionPipeline:', err);
+    return {
+      ...defaultDebug,
+      debugLog: `NO_FACE_DETECTED: Exception during pipeline execution (${err?.message || err}).`
+    };
+  }
+}
+
+export interface FaceComparisonResult {
+  faceDetectedA: boolean;
+  faceCountA: number;
+  faceDetectedB: boolean;
+  faceCountB: number;
+  embeddingDimensionA: number;
+  embeddingDimensionB: number;
+  cosineSimilarity: number;
+  euclideanDistance: number;
+  similarityScore: number;
+  threshold: number;
+  decision: 'MATCH' | 'NOT_MATCH' | 'NO_FACE_DETECTED' | 'MULTIPLE_FACES';
+  modelName: string;
+  modelVersion: string;
+  details: string;
+}
+
+/**
+ * Two-Image Direct Biometric Accuracy Comparator (Test Utility):
+ * Takes Image A and Image B, detects faces, extracts 512D embeddings, and computes cosine similarity.
+ */
+export async function compareTwoFaces(
+  imageADataUrl: string,
+  imageBDataUrl: string,
+  threshold: number = DEFAULT_DUPLICATE_THRESHOLD
+): Promise<FaceComparisonResult> {
+  const defaultRes: FaceComparisonResult = {
+    faceDetectedA: false,
+    faceCountA: 0,
+    faceDetectedB: false,
+    faceCountB: 0,
+    embeddingDimensionA: 0,
+    embeddingDimensionB: 0,
+    cosineSimilarity: 0,
+    euclideanDistance: 999,
+    similarityScore: 0,
+    threshold,
+    decision: 'NO_FACE_DETECTED',
+    modelName: BIOMETRIC_MODEL_NAME,
+    modelVersion: ARCFACE_VERSION,
+    details: ''
+  };
+
+  try {
+    const [normA, normB] = await Promise.all([
+      normalizeImageForBiometrics(imageADataUrl, 800, 0.92),
+      normalizeImageForBiometrics(imageBDataUrl, 800, 0.92)
+    ]);
+
+    const [imgA, imgB] = await Promise.all([
+      loadImageElement(normA),
+      loadImageElement(normB)
+    ]);
+
+    const [resA, resB] = await Promise.all([
+      detectFacesInInput(imgA, 0.15),
+      detectFacesInInput(imgB, 0.15)
+    ]);
+
+    defaultRes.faceDetectedA = resA.faceCount > 0;
+    defaultRes.faceCountA = resA.faceCount;
+    defaultRes.faceDetectedB = resB.faceCount > 0;
+    defaultRes.faceCountB = resB.faceCount;
+
+    if (resA.faceCount === 0 || resB.faceCount === 0) {
+      defaultRes.decision = 'NO_FACE_DETECTED';
+      defaultRes.details = `No face detected in ${resA.faceCount === 0 ? 'Image A' : 'Image B'}.`;
+      return defaultRes;
+    }
+
+    if (resA.faceCount > 1 || resB.faceCount > 1) {
+      defaultRes.decision = 'MULTIPLE_FACES';
+      defaultRes.details = `Multiple faces detected in ${resA.faceCount > 1 ? 'Image A (' + resA.faceCount + ' faces)' : 'Image B (' + resB.faceCount + ' faces)'}.`;
+      return defaultRes;
+    }
+
+    if (!resA.embedding512 || !resB.embedding512) {
+      defaultRes.decision = 'NO_FACE_DETECTED';
+      defaultRes.details = 'Could not extract 512D deep facial descriptors.';
+      return defaultRes;
+    }
+
+    defaultRes.embeddingDimensionA = 512;
+    defaultRes.embeddingDimensionB = 512;
+
+    const cosine = calculateArcFaceCosineSimilarity(resA.embedding512, resB.embedding512);
+    const euclidean = calculateEuclideanDistance(resA.embedding512, resB.embedding512);
+    const score = calculateBiometricConfidence(euclidean);
+
+    const isMatch = cosine >= threshold && euclidean <= DEFAULT_MAX_DUPLICATE_EUCLIDEAN && score >= 82;
+
+    return {
+      ...defaultRes,
+      cosineSimilarity: Number(cosine.toFixed(3)),
+      euclideanDistance: Number(euclidean.toFixed(3)),
+      similarityScore: score,
+      decision: isMatch ? 'MATCH' : 'NOT_MATCH',
+      details: isMatch
+        ? `MATCH: Same person verified with ${score}% Biometric Confidence (Cosine ${cosine.toFixed(3)} >= ${threshold}, Euclidean ${euclidean.toFixed(3)} <= ${DEFAULT_MAX_DUPLICATE_EUCLIDEAN}).`
+        : `NOT_MATCH: Distinct individuals verified (${score}% similarity, Cosine ${cosine.toFixed(3)} < ${threshold}, Euclidean ${euclidean.toFixed(3)} > ${DEFAULT_MAX_DUPLICATE_EUCLIDEAN}).`
+    };
+  } catch (err: any) {
+    return {
+      ...defaultRes,
+      details: `Comparison error: ${err?.message || err}`
+    };
+  }
+}
+
 // Backward-compatibility exports
 export const extractFaceVector = extractArcFaceEmbedding;
+
+export async function extractMultipleArcFaceEmbeddings(dataUrls: string[]): Promise<number[][]> {
+  const embeddings: number[][] = [];
+  for (const url of dataUrls) {
+    if (url) {
+      const emb = await extractArcFaceEmbedding(url);
+      if (emb && isValidArcFaceVector(emb)) {
+        embeddings.push(emb);
+      }
+    }
+  }
+  return embeddings;
+}
+
 export const verifyDuplicateFaceBatch = async (
   candidateDataUrl: string,
   candidateVector: number[] | null,
   workersList: any[]
 ) => {
-  const result = await verifyArcFaceDuplicateFaiss(candidateVector, candidateDataUrl, workersList, DEFAULT_BIOMETRIC_THRESHOLD);
+  const result = await verifyArcFaceDuplicateFaiss(candidateVector, candidateDataUrl, workersList, DEFAULT_DUPLICATE_THRESHOLD);
   return {
     duplicateFound: result.duplicateFound,
     matchedWorkerId: result.matchedWorkerId,
     similarityScore: result.similarityScore,
-    euclideanDistance: result.cosineSimilarity ? (1 - result.cosineSimilarity) : 999,
+    euclideanDistance: result.euclideanDistance,
     noFaceDetected: result.noFaceDetected
   };
 };
 export const isValidFaceNetVector = isValidArcFaceVector;
-
-

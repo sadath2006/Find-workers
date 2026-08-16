@@ -7,6 +7,7 @@
 export interface FaissSearchResult {
   id: string;
   similarity: number;
+  index: number;
 }
 
 export class FaissIndexFlatIP {
@@ -36,9 +37,10 @@ export class FaissIndexFlatIP {
 
   /**
    * Adds a 512-dimensional L2-normalized vector into FAISS index.
+   * Ensures strict 1-to-1 sync between internal matrix slot and worker ID.
    */
   public add(id: string, vector: number[] | Float32Array): void {
-    if (!vector || vector.length !== this.dimension) return;
+    if (!id || !vector || vector.length !== this.dimension) return;
 
     this.ensureCapacity(this.size + 1);
     this.ids.push(id);
@@ -52,6 +54,7 @@ export class FaissIndexFlatIP {
 
   /**
    * Resets and rebuilds the FAISS index from a list of records.
+   * Guarantees index position i maps directly to record[i].id.
    */
   public buildIndex(records: Array<{ id: string; vector: number[] | Float32Array }>): void {
     this.ids = [];
@@ -60,7 +63,7 @@ export class FaissIndexFlatIP {
     this.matrix = new Float32Array(this.capacity * this.dimension);
 
     for (const rec of records) {
-      if (rec.vector && rec.vector.length === this.dimension) {
+      if (rec && rec.id && rec.vector && rec.vector.length === this.dimension) {
         this.add(rec.id, rec.vector);
       }
     }
@@ -84,14 +87,14 @@ export class FaissIndexFlatIP {
       const offset = i * this.dimension;
       let dotProduct = 0.0;
 
-      // Dynamic loop over dimension
       for (let j = 0; j < this.dimension; j++) {
         dotProduct += q[j] * this.matrix[offset + j];
       }
 
       results[i] = {
         id: this.ids[i],
-        similarity: Math.max(-1.0, Math.min(1.0, dotProduct))
+        similarity: Math.max(-1.0, Math.min(1.0, dotProduct)),
+        index: i
       };
     }
 
@@ -103,5 +106,9 @@ export class FaissIndexFlatIP {
 
   public getSize(): number {
     return this.size;
+  }
+
+  public getIds(): string[] {
+    return [...this.ids];
   }
 }

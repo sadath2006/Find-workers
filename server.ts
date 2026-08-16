@@ -4,26 +4,29 @@ import { spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { FaissIndexFlatIP, FaissSearchResult } from "./src/utils/faissIndex";
 
-// Ensure Python FastAPI server is running on port 8000
-let pythonProcess: any = null;
-function ensurePythonFastApiServer() {
-  fetch("http://127.0.0.1:8000/health")
+// Track Python FastAPI server availability
+let isPythonOnline = false;
+let pythonChecked = false;
+
+function checkPythonFastApiServer() {
+  if (pythonChecked && isPythonOnline) return;
+  fetch("http://127.0.0.1:5050/health")
     .then((res) => {
-      if (res.ok) console.log("✅ Python FastAPI SCRFD + ArcFace 512D microservice is online!");
-      else spawnPython();
+      pythonChecked = true;
+      if (res.ok) {
+        isPythonOnline = true;
+        console.log("✅ Python FastAPI SCRFD + ArcFace 512D microservice is online!");
+      } else {
+        isPythonOnline = false;
+      }
     })
     .catch(() => {
-      spawnPython();
+      pythonChecked = true;
+      isPythonOnline = false;
     });
 }
 
-function spawnPython() {
-  console.log("🚀 Spawning Python FastAPI biometric server (fastapi_server.py)...");
-  pythonProcess = spawn("python3", ["fastapi_server.py"], { stdio: "inherit" });
-  pythonProcess.on("error", (err: any) => console.error("FastAPI spawn error:", err));
-}
-
-ensurePythonFastApiServer();
+checkPythonFastApiServer();
 
 // Initialize Server-Side FAISS IndexFlatIP (512 Dimensions for ArcFace Vectors)
 const faissIndex = new FaissIndexFlatIP(512, 50000);
@@ -36,66 +39,148 @@ async function startServer() {
   app.use(express.json({ limit: "35mb" }));
   app.use(express.urlencoded({ extended: true, limit: "35mb" }));
 
-  // Helper to forward request to Python FastAPI microservice
-  const forwardToFastApi = async (endpoint: string, reqBody: any, res: express.Response) => {
+  // Helper to forward request to Python FastAPI microservice if online
+  const forwardToFastApi = async (endpoint: string, reqBody: any, res: express.Response): Promise<boolean> => {
+    if (!isPythonOnline) return false;
     try {
-      const response = await fetch(`http://127.0.0.1:8000${endpoint}`, {
+      const response = await fetch(`http://127.0.0.1:5050${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(reqBody)
       });
       if (response.ok) {
         const data = await response.json();
-        return res.json(data);
+        res.json(data);
+        return true;
       } else {
-        const errText = await response.text();
-        return res.status(response.status).send(errText);
+        return false;
       }
-    } catch (err: any) {
-      console.warn(`⚠️ FastAPI forward error on ${endpoint}:`, err?.message || err);
-      return null;
+    } catch {
+      isPythonOnline = false;
+      return false;
     }
   };
 
   // Health & FAISS Index Status Route
   app.get("/api/health", async (req, res) => {
-    try {
-      const pyRes = await fetch("http://127.0.0.1:8000/health");
-      const pyData = pyRes.ok ? await pyRes.json() : null;
-      return res.json({ 
-        status: "ok", 
-        service: "Node/Express + Python FastAPI SCRFD/ArcFace Biometric Engine",
-        faissIndexSize: faissIndex.getSize(),
-        dimension: 512,
-        pythonService: pyData
-      });
-    } catch {
-      return res.json({
-        status: "ok",
-        service: "Node/Express FAISS Vector Search Engine",
-        faissIndexSize: faissIndex.getSize(),
-        dimension: 512
-      });
+    if (isPythonOnline) {
+      try {
+        const pyRes = await fetch("http://127.0.0.1:5050/health");
+        const pyData = pyRes.ok ? await pyRes.json() : null;
+        return res.json({ 
+          status: "ok", 
+          service: "Node/Express + Python FastAPI SCRFD/ArcFace Biometric Engine",
+          faissIndexSize: faissIndex.getSize(),
+          dimension: 512,
+          pythonService: pyData
+        });
+      } catch {
+        isPythonOnline = false;
+      }
     }
+
+    return res.json({
+      status: "ok",
+      service: "Node/Express FAISS Vector Search Engine",
+      faissIndexSize: faissIndex.getSize(),
+      dimension: 512
+    });
   });
 
-  // Proxy biometric endpoints to Python FastAPI microservice
+  // Biometric endpoints with native Node.js FAISS fallback
   app.post("/api/face/recognize", async (req, res) => {
     const forwarded = await forwardToFastApi("/recognize", req.body, res);
     if (forwarded) return;
-    return res.status(503).json({ error: "Python biometric microservice unavailable" });
+    
+    // Fallback: If embedding is passed, perform FAISS search directly
+    const { embedding, threshold = 0.880 } = req.body;
+    if (Array.isArray(embedding) && embedding.length === 512) {
+      const results = faissIndex.search(embedding, 1);
+      const best = results[0];
+      const similarity = best ? best.similarity : 0;
+      const isMatch = similarity >= threshold && !!best?.id;
+      return res.json({
+        faceDetected: true,
+        embeddingDimension: 512,
+        similarity: Number(similarity.toFixed(3)),
+        threshold,
+        matchedWorkerId: isMatch ? best.id : null,
+        matchedWorker: isMatch ? workerMetadataStore.get(best.id) || null : null,
+        finalDecision: isMatch ? "DUPLICATE" : "NOT_DUPLICATE",
+        fallbackToClient: false
+      });
+    }
+
+    // If image URL is provided without vector, tell client to extract with client-side WebGL
+    return res.json({ fallbackToClient: true, faceDetected: null });
   });
 
   app.post("/api/face/verify-duplicate", async (req, res) => {
     const forwarded = await forwardToFastApi("/verify-duplicate", req.body, res);
     if (forwarded) return;
-    return res.status(503).json({ error: "Python biometric microservice unavailable" });
+
+    const { embedding, embeddings, threshold = 0.880, ignoreWorkerId, workers } = req.body;
+    
+    // Sync workers if passed
+    if (Array.isArray(workers) && workers.length > 0) {
+      const records: Array<{ id: string; vector: number[] }> = [];
+      for (const w of workers) {
+        if (!w.id || (ignoreWorkerId && w.id === ignoreWorkerId)) continue;
+        workerMetadataStore.set(w.id, { id: w.id, name: w.name, entityName: w.entityName });
+        const vecs = parseWorkerVectors(w);
+        for (const vec of vecs) {
+          records.push({ id: w.id, vector: vec });
+        }
+      }
+      if (records.length > 0) {
+        faissIndex.buildIndex(records);
+      }
+    }
+
+    const queryVec = Array.isArray(embedding) && embedding.length === 512 
+      ? embedding 
+      : (Array.isArray(embeddings) && embeddings[0]?.length === 512 ? embeddings[0] : null);
+
+    if (queryVec) {
+      const results = faissIndex.search(queryVec, 10);
+      let bestMatch: FaissSearchResult | null = null;
+      for (const r of results) {
+        if (r && r.id !== ignoreWorkerId && (!bestMatch || r.similarity > bestMatch.similarity)) {
+          bestMatch = r;
+        }
+      }
+
+      if (!bestMatch) {
+        return res.json({
+          duplicateFound: false,
+          finalDecision: "NOT_DUPLICATE",
+          similarity: 0,
+          threshold,
+          matchedWorkerId: null
+        });
+      }
+
+      const similarity = bestMatch.similarity;
+      const isDup = similarity >= threshold;
+      return res.json({
+        faceDetected: true,
+        duplicateFound: isDup,
+        finalDecision: isDup ? "DUPLICATE" : "NOT_DUPLICATE",
+        similarity: Number(similarity.toFixed(3)),
+        threshold,
+        matchedWorkerId: isDup ? bestMatch.id : null,
+        matchedWorker: isDup ? workerMetadataStore.get(bestMatch.id) || null : null
+      });
+    }
+
+    // Default: Signal client to run local face detection and FAISS match
+    return res.json({ fallbackToClient: true, faceDetected: null });
   });
 
   app.post("/api/face/extract-vector", async (req, res) => {
     const forwarded = await forwardToFastApi("/extract-vector", req.body, res);
     if (forwarded) return;
-    return res.status(503).json({ error: "Python biometric microservice unavailable" });
+    return res.json({ fallbackToClient: true });
   });
 
   // FAISS Status Endpoint
@@ -108,15 +193,30 @@ async function startServer() {
     });
   });
 
-  function isLegacyCorruptedVector(vec: number[]): boolean {
-    if (!vec || !Array.isArray(vec) || vec.length !== 512) return true;
+  function isValidFaceVectorQuality(vec: number[]): boolean {
+    if (!vec || !Array.isArray(vec) || (vec.length !== 512 && vec.length !== 128)) return false;
+    let sum = 0;
     let sumSq = 0;
-    for (let i = 0; i < 512; i++) {
+    let hasPositive = false;
+    let hasNegative = false;
+
+    for (let i = 0; i < vec.length; i++) {
       const val = vec[i];
-      if (typeof val !== "number" || isNaN(val)) return true;
+      if (typeof val !== "number" || isNaN(val) || !isFinite(val)) return false;
+      sum += val;
       sumSq += val * val;
+      if (val > 0.0001) hasPositive = true;
+      if (val < -0.0001) hasNegative = true;
     }
-    return sumSq < 0.05;
+
+    if (sumSq < 0.05) return false;
+    const mean = sum / vec.length;
+    const variance = (sumSq / vec.length) - (mean * mean);
+    return variance > 0.0001 && hasPositive && hasNegative;
+  }
+
+  function isLegacyCorruptedVector(vec: number[]): boolean {
+    return !isValidFaceVectorQuality(vec);
   }
 
   function normalizeL2(vec: number[]): number[] {
@@ -173,61 +273,35 @@ async function startServer() {
     const vectors: number[][] = [];
     if (!w) return vectors;
 
-    const rawCandidates: any[] = [
-      w.faceEmbedding,
-      w.faceEmbeddings,
-      w.faceVector,
-      w.faceVectors,
-      w.embedding,
-      w.embeddings,
-      w.vector,
-      w.vectors,
-      w.arcfaceEmbeddings,
-      w.arcfaceEmbedding,
-      w.descriptor,
-      w.descriptors,
-      w.faceDescriptor,
-      w.faceDescriptors,
-      w.biometricVector,
-      w.biometricVectors,
-      w.biometrics
-    ];
-
-    const addVector = (nums: number[]) => {
-      if (nums.length === 512) {
-        const normalized = normalizeL2(nums);
-        if (!isLegacyCorruptedVector(normalized)) {
-          vectors.push(normalized);
-        }
-      } else if (nums.length === 128) {
-        const proj512 = projectToArcFace512D(nums);
-        if (!isLegacyCorruptedVector(proj512)) {
-          vectors.push(proj512);
+    const tryAdd = (item: any): boolean => {
+      const parsed = parseCandidateArray(item);
+      if (parsed && isValidFaceVectorQuality(parsed)) {
+        if (parsed.length === 512) {
+          vectors.push(normalizeL2(parsed));
+          return true;
+        } else if (parsed.length === 128) {
+          vectors.push(projectToArcFace512D(parsed));
+          return true;
         }
       }
+      return false;
     };
 
-    for (const item of rawCandidates) {
-      if (!item) continue;
-      if (Array.isArray(item) && item.length > 0) {
-        if (typeof item[0] === "number") {
-          const parsed = parseCandidateArray(item);
-          if (parsed) addVector(parsed);
-        } else {
-          for (const sub of item) {
-            if (sub && typeof sub === "object" && !Array.isArray(sub)) {
-              const innerVec = sub.vector || sub.embedding || sub.faceEmbedding || sub.descriptor || sub;
-              const parsed = parseCandidateArray(innerVec);
-              if (parsed) addVector(parsed);
-            } else {
-              const parsed = parseCandidateArray(sub);
-              if (parsed) addVector(parsed);
-            }
-          }
+    const primaryFields = [w.faceEmbedding, w.arcfaceEmbedding, w.faceVector, w.descriptor];
+    for (const f of primaryFields) {
+      if (f && tryAdd(f)) return vectors;
+    }
+
+    const listFields = [w.faceEmbeddings, w.faceVectors, w.embeddings, w.vectors, w.arcfaceEmbeddings, w.descriptors];
+    for (const list of listFields) {
+      if (Array.isArray(list) && list.length > 0) {
+        for (const item of list) {
+          const candidate = item && typeof item === "object" && !Array.isArray(item)
+            ? (item.vector || item.embedding || item.faceEmbedding || item.descriptor || item)
+            : item;
+          tryAdd(candidate);
         }
-      } else {
-        const parsed = parseCandidateArray(item);
-        if (parsed) addVector(parsed);
+        if (vectors.length > 0) return vectors;
       }
     }
 
@@ -272,7 +346,7 @@ async function startServer() {
   // FAISS Vector Similarity Search & Duplicate Detection Endpoint
   app.post("/api/face/faiss-search", (req, res) => {
     try {
-      const { embedding, embeddings, threshold = 0.86, topK = 1 } = req.body;
+      const { embedding, embeddings, threshold = 0.880, topK = 10 } = req.body;
 
       const queryVectors: number[][] = [];
       if (Array.isArray(embedding) && embedding.length === 512) {
@@ -307,9 +381,9 @@ async function startServer() {
 
       for (const qVec of queryVectors) {
         const results = faissIndex.search(qVec, topK);
-        if (results.length > 0) {
-          if (!bestMatch || results[0].similarity > bestMatch.similarity) {
-            bestMatch = results[0];
+        for (const r of results) {
+          if (r && (!bestMatch || r.similarity > bestMatch.similarity)) {
+            bestMatch = r;
           }
         }
       }
@@ -329,19 +403,21 @@ async function startServer() {
       const euclideanDist = similarity > 0 ? Math.sqrt(Math.max(0, 2 - 2 * similarity)) : 999;
       
       let similarityPercentage = 0;
-      if (euclideanDist <= 0.20) {
-        similarityPercentage = 99;
-      } else if (euclideanDist <= 0.40) {
-        similarityPercentage = Math.round(98 - ((euclideanDist - 0.20) / 0.20) * 10);
-      } else if (euclideanDist <= 0.52) {
-        similarityPercentage = Math.round(88 - ((euclideanDist - 0.40) / 0.12) * 10);
-      } else if (euclideanDist <= 0.90) {
-        similarityPercentage = Math.round(74 - ((euclideanDist - 0.52) / 0.38) * 44);
+      if (euclideanDist <= 0.15) {
+        similarityPercentage = Math.round(100 - (euclideanDist / 0.15) * 2);
+      } else if (euclideanDist <= 0.35) {
+        similarityPercentage = Math.round(98 - ((euclideanDist - 0.15) / 0.20) * 8);
+      } else if (euclideanDist <= 0.490) {
+        similarityPercentage = Math.round(90 - ((euclideanDist - 0.35) / 0.140) * 10);
+      } else if (euclideanDist <= 0.68) {
+        similarityPercentage = Math.round(79 - ((euclideanDist - 0.490) / 0.190) * 34);
+      } else if (euclideanDist <= 0.88) {
+        similarityPercentage = Math.round(44 - ((euclideanDist - 0.68) / 0.20) * 26);
       } else {
-        similarityPercentage = Math.max(0, Math.round(29 - (euclideanDist - 0.90) * 15));
+        similarityPercentage = Math.max(0, Math.round(17 - (euclideanDist - 0.88) * 15));
       }
 
-      const isDuplicate = (similarity >= threshold || similarityPercentage >= 78) && similarity >= 0.85 && !isNaN(euclideanDist) && !!bestMatch.id;
+      const isDuplicate = similarity >= threshold && euclideanDist <= 0.490 && similarityPercentage >= 80 && !isNaN(euclideanDist) && !!bestMatch.id;
       const workerMeta = workerMetadataStore.get(bestMatch.id) || null;
 
       return res.json({
@@ -375,6 +451,59 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid PNG data URL" });
     } catch (err: any) {
       return res.status(500).json({ error: err.message || "Failed to save logo PNG" });
+    }
+  });
+
+  // Test Biometrics Endpoint for verifying Match vs Non-Match decisions
+  app.post("/api/face/test-biometrics", (req, res) => {
+    try {
+      const { vectorA, vectorB, threshold = 0.885 } = req.body;
+      if (!Array.isArray(vectorA) || !Array.isArray(vectorB) || vectorA.length !== 512 || vectorB.length !== 512) {
+        return res.status(400).json({
+          error: "Two 512-dimensional vectors (vectorA and vectorB) are required."
+        });
+      }
+
+      let dotProduct = 0;
+      let sumDiffSq = 0;
+      for (let i = 0; i < 512; i++) {
+        dotProduct += vectorA[i] * vectorB[i];
+        const diff = vectorA[i] - vectorB[i];
+        sumDiffSq += diff * diff;
+      }
+
+      const cosineSimilarity = Math.max(-1.0, Math.min(1.0, dotProduct));
+      const euclideanDistance = Math.sqrt(sumDiffSq);
+
+      let similarityScore = 0;
+      if (euclideanDistance <= 0.15) {
+        similarityScore = Math.round(100 - (euclideanDistance / 0.15) * 2);
+      } else if (euclideanDistance <= 0.35) {
+        similarityScore = Math.round(98 - ((euclideanDistance - 0.15) / 0.20) * 8);
+      } else if (euclideanDistance <= 0.480) {
+        similarityScore = Math.round(90 - ((euclideanDistance - 0.35) / 0.130) * 8);
+      } else if (euclideanDistance <= 0.65) {
+        similarityScore = Math.round(78 - ((euclideanDistance - 0.480) / 0.170) * 38);
+      } else if (euclideanDistance <= 0.85) {
+        similarityScore = Math.round(40 - ((euclideanDistance - 0.65) / 0.20) * 25);
+      } else {
+        similarityScore = Math.max(0, Math.round(15 - (euclideanDistance - 0.85) * 15));
+      }
+
+      const isMatch = cosineSimilarity >= threshold && euclideanDistance <= 0.480 && similarityScore >= 82;
+
+      return res.json({
+        embeddingDimension: 512,
+        cosineSimilarity: Number(cosineSimilarity.toFixed(4)),
+        euclideanDistance: Number(euclideanDistance.toFixed(4)),
+        similarityScore,
+        threshold,
+        decision: isMatch ? "MATCH" : "NOT_MATCH",
+        modelName: "ArcFace-512D",
+        modelVersion: "arcface_512d_v2"
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || "Test biometrics failed" });
     }
   });
 
