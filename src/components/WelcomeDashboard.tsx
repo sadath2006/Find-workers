@@ -6,7 +6,6 @@ import { UserManagementModal } from './UserManagementModal';
 import { EntityManagementPanel } from './EntityManagementPanel';
 import { WorkerRegistrationModal } from './WorkerRegistrationModal';
 import { FaceScannerModal } from './FaceScannerModal';
-import { BiometricTesterModal } from './BiometricTesterModal';
 import { CommentsSection } from './CommentsSection';
 import { logoutUser, getAllWorkers } from '../firebase';
 import { 
@@ -45,16 +44,6 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
   const [showEntityPanel, setShowEntityPanel] = useState(false);
   const [showWorkerRegModal, setShowWorkerRegModal] = useState(false);
   const [showFaceScanModal, setShowFaceScanModal] = useState(false);
-  const [showBiometricTester, setShowBiometricTester] = useState(false);
-  const [workersList, setWorkersList] = useState<any[]>([]);
-
-  const handleOpenBiometricTester = async () => {
-    try {
-      const workers = await getAllWorkers();
-      setWorkersList(workers);
-    } catch (_) {}
-    setShowBiometricTester(true);
-  };
 
   const handleLogout = async () => {
     setLoggingOut(true);
@@ -237,30 +226,6 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
             </button>
           )}
 
-          {/* Biometric Accuracy & Diagnostics Tester (Available for Admins / Staff / Owners) */}
-          {canAccessEntityHub && (
-            <button
-              onClick={handleOpenBiometricTester}
-              className="w-full p-3.5 rounded-2xl bg-slate-900/90 hover:bg-slate-900 text-white border border-indigo-500/30 shadow-md flex items-center justify-between transition-all cursor-pointer group"
-            >
-              <div className="flex items-center space-x-3">
-                <div className="p-2 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
-                  <Sliders className="w-4 h-4" />
-                </div>
-                <div className="text-left">
-                  <h4 className="text-xs font-black text-white group-hover:text-indigo-300 transition-colors flex items-center space-x-1.5">
-                    <span>Biometric Accuracy & Test Utility</span>
-                    <span className="text-[9px] bg-indigo-600 text-white font-extrabold px-1.5 py-0.2 rounded-full uppercase">512D ArcFace</span>
-                  </h4>
-                  <p className="text-[10px] text-slate-400">
-                    Compare Image A vs Image B (MATCH vs NOT_MATCH vs NO_FACE)
-                  </p>
-                </div>
-              </div>
-              <ChevronRight className="w-4 h-4 text-indigo-400 group-hover:text-white transition-colors" />
-            </button>
-          )}
-
           {/* Entity & Staff Hub Toggle Button */}
           {canAccessEntityHub && (
             <button
@@ -355,15 +320,6 @@ export const WelcomeDashboard: React.FC<WelcomeDashboardProps> = ({
           isOpen={showFaceScanModal}
           onClose={() => setShowFaceScanModal(false)}
           currentUser={user}
-        />
-      )}
-
-      {/* Biometric Accuracy & Diagnostics Tester Modal */}
-      {showBiometricTester && (
-        <BiometricTesterModal
-          isOpen={showBiometricTester}
-          onClose={() => setShowBiometricTester(false)}
-          workers={workersList}
         />
       )}
 

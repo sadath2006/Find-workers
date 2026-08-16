@@ -358,7 +358,7 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
           type: 'warning', 
           text: '⚠️ NO_FACE_DETECTED: No valid human face detected. Non-face images (food, objects, scenery, animals) cannot be registered or duplicate matched.' 
         });
-      } else if (pipelineResult.finalDecision === 'DUPLICATE' && pipelineResult.matchedWorkerId) {
+      } else if ((pipelineResult.finalDecision === 'DUPLICATE' || pipelineResult.finalDecision === 'MATCH') && pipelineResult.matchedWorkerId) {
         const matchedWorker = allWorkers.find(w => w.id === pipelineResult.matchedWorkerId);
         if (matchedWorker) {
           setDuplicateMatch({
@@ -808,21 +808,23 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
                 This worker is already registered in Find Worker network. Would you like to link <span className="font-bold text-white">{activeEntity?.name}</span> to this worker profile?
               </p>
 
-              <button
-                type="button"
-                onClick={handleLinkExistingWorker}
-                disabled={loading}
-                className="w-full bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-2 shadow-md cursor-pointer transition-all"
-              >
-                {loading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <>
-                    <LinkIcon className="w-4 h-4" />
-                    <span>Update & Link Worker to {activeEntity?.name}</span>
-                  </>
-                )}
-              </button>
+              <div className="flex items-center space-x-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleLinkExistingWorker}
+                  disabled={loading}
+                  className="flex-1 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-2 shadow-md cursor-pointer transition-all"
+                >
+                  {loading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <LinkIcon className="w-4 h-4" />
+                      <span>Link Worker to {activeEntity?.name}</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}

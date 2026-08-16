@@ -2,7 +2,17 @@ import express from "express";
 import path from "path";
 import { spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Type } from "@google/genai";
 import { FaissIndexFlatIP, FaissSearchResult } from "./src/utils/faissIndex";
+
+// Lazy Gemini API Client
+let geminiClient: GoogleGenAI | null = null;
+function getGemini(): GoogleGenAI | null {
+  if (!geminiClient && process.env.GEMINI_API_KEY) {
+    geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return geminiClient;
+}
 
 // Track Python FastAPI server availability
 let isPythonOnline = false;
@@ -85,6 +95,263 @@ async function startServer() {
       faissIndexSize: faissIndex.getSize(),
       dimension: 512
     });
+  });
+
+  // Deep Multimodal AI Biometric Comparison using Gemini 2.5 Flash Vision
+  app.post("/api/face/compare", async (req, res) => {
+    try {
+      const { imageA, imageB, threshold = 0.880 } = req.body;
+      if (!imageA || !imageB) {
+        return res.status(400).json({ error: "Both imageA and imageB are required." });
+      }
+
+      const parseImage = (dataUrl: string) => {
+        const matches = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+]+);base64,(.+)$/);
+        if (matches) {
+          return { mimeType: matches[1], data: matches[2] };
+        }
+        return { mimeType: "image/jpeg", data: dataUrl };
+      };
+
+      const imgPartA = parseImage(imageA);
+      const imgPartB = parseImage(imageB);
+
+      const ai = getGemini();
+      if (!ai) {
+        return res.json({
+          fallbackToClient: true,
+          message: "GEMINI_API_KEY is not configured on the server."
+        });
+      }
+
+      const prompt = `You are an expert biometric facial verification and forensic identity analysis AI.
+Analyze the two attached images (Image 1 and Image 2) and perform rigorous biometric facial comparison.
+
+Tasks:
+1. Detect whether a human face is clearly present in Image 1 and Image 2.
+2. Count the number of human faces in each image.
+3. If either image has no human face, mark faceDetected=false and decision="NO_FACE_DETECTED".
+4. If either image has multiple faces, mark decision="MULTIPLE_FACES".
+5. If both contain a single face, compare them rigorously:
+   - Craniofacial bone structure and jawline contours
+   - Eye shape, inter-pupillary distance, and brow ridge
+   - Nose bridge height, width, and tip angle
+   - Lip shape, philtrum proportions, and chin structure
+   - Ear shape and attachment if visible
+6. Determine with high scientific rigor whether Image 1 and Image 2 show the EXACT SAME PERSON or TWO DIFFERENT INDIVIDUALS.
+7. Output exact similarityScore (0 to 100), cosineSimilarity (0.00 to 1.00), euclideanDistance (0.00 to 2.00), and decision ("MATCH" vs "NOT_MATCH").
+   - If DIFFERENT PEOPLE: similarityScore MUST be low (typically 5% - 40%), cosineSimilarity < 0.60, euclideanDistance > 0.90, decision: "NOT_MATCH".
+   - If SAME PERSON: similarityScore MUST be high (typically 88% - 99%), cosineSimilarity >= 0.885, euclideanDistance <= 0.48, decision: "MATCH".
+8. Provide clear, objective anatomical reasons explaining your decision.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: imgPartA.mimeType,
+                  data: imgPartA.data,
+                }
+              },
+              {
+                inlineData: {
+                  mimeType: imgPartB.mimeType,
+                  data: imgPartB.data,
+                }
+              },
+              {
+                text: prompt
+              }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              faceDetectedA: { type: Type.BOOLEAN },
+              faceCountA: { type: Type.INTEGER },
+              faceDetectedB: { type: Type.BOOLEAN },
+              faceCountB: { type: Type.INTEGER },
+              isSamePerson: { type: Type.BOOLEAN },
+              similarityScore: { type: Type.INTEGER },
+              cosineSimilarity: { type: Type.NUMBER },
+              euclideanDistance: { type: Type.NUMBER },
+              decision: {
+                type: Type.STRING,
+                enum: ["MATCH", "NOT_MATCH", "NO_FACE_DETECTED", "MULTIPLE_FACES"]
+              },
+              reasoning: { type: Type.STRING },
+              anatomicalPoints: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              }
+            },
+            required: [
+              "faceDetectedA",
+              "faceCountA",
+              "faceDetectedB",
+              "faceCountB",
+              "isSamePerson",
+              "similarityScore",
+              "cosineSimilarity",
+              "euclideanDistance",
+              "decision",
+              "reasoning"
+            ]
+          }
+        }
+      });
+
+      const parsedText = response.text;
+      if (!parsedText) {
+        return res.json({ fallbackToClient: true });
+      }
+
+      const comparison = JSON.parse(parsedText);
+      return res.json({
+        ...comparison,
+        fallbackToClient: false,
+        modelName: "Google Gemini 2.5 Flash Vision Multimodal Biometrics",
+        modelVersion: "gemini-2.5-flash-v1"
+      });
+    } catch (err: any) {
+      console.error("[Biometric AI] Server comparison error:", err);
+      return res.json({
+        fallbackToClient: true,
+        error: err?.message || String(err)
+      });
+    }
+  });
+
+  // Deep Multimodal AI Face Search & Recognition across Candidate Gallery
+  app.post("/api/face/identify-gemini", async (req, res) => {
+    try {
+      const { queryImage, candidates, threshold = 0.880 } = req.body;
+      if (!queryImage || !Array.isArray(candidates) || candidates.length === 0) {
+        return res.status(400).json({ error: "queryImage and non-empty candidates array are required." });
+      }
+
+      const ai = getGemini();
+      if (!ai) {
+        return res.json({
+          fallbackToClient: true,
+          message: "GEMINI_API_KEY is not configured on the server."
+        });
+      }
+
+      const parseImage = (dataUrl: string) => {
+        const matches = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+]+);base64,(.+)$/);
+        if (matches) {
+          return { mimeType: matches[1], data: matches[2] };
+        }
+        return { mimeType: "image/jpeg", data: dataUrl };
+      };
+
+      const queryPart = parseImage(queryImage);
+
+      // Select top candidates (max 10 for multi-image vision payload)
+      const validCandidates = candidates
+        .filter((c: any) => c && c.id && c.photoUrl && (c.photoUrl.startsWith("data:image/") || c.photoUrl.length > 50))
+        .slice(0, 8);
+
+      if (validCandidates.length === 0) {
+        return res.json({
+          fallbackToClient: true,
+          message: "No candidates with valid photo data found."
+        });
+      }
+
+      const promptParts: any[] = [];
+      promptParts.push({
+        inlineData: {
+          mimeType: queryPart.mimeType,
+          data: queryPart.data
+        }
+      });
+
+      let candidateIndexMapText = "Target Probe Image is Image 1.\nCandidate database images:\n";
+      for (let i = 0; i < validCandidates.length; i++) {
+        const cand = validCandidates[i];
+        const candImgPart = parseImage(cand.photoUrl);
+        promptParts.push({
+          inlineData: {
+            mimeType: candImgPart.mimeType,
+            data: candImgPart.data
+          }
+        });
+        candidateIndexMapText += `- Image ${i + 2}: Candidate ID "${cand.id}", Name "${cand.name || 'Unknown'}"\n`;
+      }
+
+      const prompt = `You are a forensic biometric facial identification AI.
+${candidateIndexMapText}
+
+Tasks:
+1. Examine Target Probe Image (Image 1). Check if a clear human face is present.
+2. If NO human face is present in Image 1, set queryFaceDetected=false, matched=false, matchedCandidateId=null, decision="NO_FACE_DETECTED".
+3. If human face is present, compare Image 1 against each candidate image (Image 2 to Image ${validCandidates.length + 1}) using rigorous craniofacial and morphological features (jaw structure, eye shape/spacing, nose bridge/wings, lips, ear structure).
+4. Determine if Image 1 matches ANY of the candidate profiles with high biometric confidence.
+   - MATCH requires true biometric identity identity (>85% confidence).
+   - If no candidate matches, set matched=false, matchedCandidateId=null, decision="NOT_MATCH".
+5. Return exact JSON with similarityScore (0 to 100), decision, matchedCandidateId, and concise reasoning.`;
+
+      promptParts.push({ text: prompt });
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: promptParts }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              queryFaceDetected: { type: Type.BOOLEAN },
+              queryFaceCount: { type: Type.INTEGER },
+              matched: { type: Type.BOOLEAN },
+              matchedCandidateId: { type: Type.STRING },
+              matchedCandidateName: { type: Type.STRING },
+              similarityScore: { type: Type.INTEGER },
+              cosineSimilarity: { type: Type.NUMBER },
+              decision: {
+                type: Type.STRING,
+                enum: ["MATCH", "NOT_MATCH", "NO_FACE_DETECTED", "MULTIPLE_FACES"]
+              },
+              reasoning: { type: Type.STRING }
+            },
+            required: [
+              "queryFaceDetected",
+              "matched",
+              "similarityScore",
+              "decision",
+              "reasoning"
+            ]
+          }
+        }
+      });
+
+      const parsedText = response.text;
+      if (!parsedText) {
+        return res.json({ fallbackToClient: true });
+      }
+
+      const identifyResult = JSON.parse(parsedText);
+      return res.json({
+        ...identifyResult,
+        fallbackToClient: false,
+        modelName: "Google Gemini 2.5 Flash Multimodal Vision Biometrics",
+        modelVersion: "gemini-2.5-flash-v1"
+      });
+    } catch (err: any) {
+      console.error("[Biometric AI] Server identify error:", err);
+      return res.json({
+        fallbackToClient: true,
+        error: err?.message || String(err)
+      });
+    }
   });
 
   // Biometric endpoints with native Node.js FAISS fallback

@@ -341,7 +341,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
 
       setPipelineResult(result);
 
-      if (result.finalDecision === 'DUPLICATE' && result.matchedWorkerId) {
+      if ((result.finalDecision === 'DUPLICATE' || result.finalDecision === 'MATCH') && result.matchedWorkerId) {
         const found = workersToSearch.find(w => w.id === result.matchedWorkerId);
         if (found) {
           setMatchedWorker(found);
