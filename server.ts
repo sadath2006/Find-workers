@@ -494,13 +494,24 @@ Tasks:
   }
 
   function projectToArcFace512D(descriptor: number[]): number[] {
-    const norm128 = Math.sqrt(descriptor.reduce((acc, val) => acc + val * val, 0)) || 1.0;
-    const u = descriptor.map(val => val / norm128);
+    const desc = Array.from(descriptor);
+    if (desc.length === 512) return normalizeL2(desc);
+    if (desc.length !== 128) return [];
+    const sumSq128 = desc.reduce((acc, val) => acc + val * val, 0);
+    const norm128 = Math.sqrt(sumSq128) || 1.0;
+    const u = desc.map(val => val / norm128);
+
     const raw512 = new Array(512);
-    for (let i = 0; i < 512; i++) {
-      raw512[i] = u[i % 128] * 0.5;
+    for (let i = 0; i < 128; i++) {
+      raw512[i] = u[i] * 0.5;
     }
-    return raw512;
+    for (let i = 0; i < 128; i++) {
+      const angle = (i * Math.PI) / 64;
+      raw512[128 + i] = (u[i] * Math.cos(angle) - u[(i + 32) % 128] * Math.sin(angle)) * 0.5;
+      raw512[256 + i] = (u[i] * Math.sin(angle) + u[(i + 64) % 128] * Math.cos(angle)) * 0.5;
+      raw512[384 + i] = (u[(i + 96) % 128] * 0.7071 - u[(i + 16) % 128] * 0.7071) * 0.5;
+    }
+    return normalizeL2(raw512);
   }
 
   function parseCandidateArray(val: any): number[] | null {

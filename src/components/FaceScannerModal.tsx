@@ -10,6 +10,7 @@ import {
 import { 
   runFaceRecognitionPipeline, 
   DEFAULT_BIOMETRIC_THRESHOLD, 
+  DEFAULT_RECOGNITION_THRESHOLD,
   loadFaceApiModels,
   FacePipelineDebugResponse,
   extractArcFaceEmbedding,
@@ -336,7 +337,9 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
       const result = await runFaceRecognitionPipeline(
         imageDataUrl,
         workersToSearch,
-        DEFAULT_BIOMETRIC_THRESHOLD
+        DEFAULT_RECOGNITION_THRESHOLD,
+        undefined,
+        false
       );
 
       setPipelineResult(result);
@@ -368,7 +371,7 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
           const sRes = await fetch('/api/face/faiss-search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ embedding: result.embedding, threshold: DEFAULT_BIOMETRIC_THRESHOLD })
+            body: JSON.stringify({ embedding: result.embedding, threshold: DEFAULT_RECOGNITION_THRESHOLD })
           });
           if (sRes.ok) {
             const sData = await sRes.json();
@@ -397,8 +400,10 @@ export const FaceScannerModal: React.FC<FaceScannerModalProps> = ({
 
       if (result.finalDecision === 'NO_FACE_DETECTED') {
         setStatusText('No human face detected. Please ensure good lighting and clear face angle.');
+      } else if (result.finalDecision === 'MULTIPLE_FACES') {
+        setStatusText(`⚠️ Multiple faces detected (${result.faceCount} faces). Please frame only 1 worker face.`);
       } else {
-        setStatusText('No matching registered worker found in database (NOT_DUPLICATE).');
+        setStatusText('No matching registered worker found in database (NOT_MATCH).');
       }
     } catch (err) {
       console.error('Pipeline error:', err);

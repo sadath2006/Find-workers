@@ -354,9 +354,17 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
 
       if (pipelineResult.finalDecision === 'NO_FACE_DETECTED') {
         setDuplicateMatch(null);
+        setFaceVector([]);
         setMsg({ 
           type: 'warning', 
           text: '⚠️ NO_FACE_DETECTED: No valid human face detected. Non-face images (food, objects, scenery, animals) cannot be registered or duplicate matched.' 
+        });
+      } else if (pipelineResult.finalDecision === 'MULTIPLE_FACES') {
+        setDuplicateMatch(null);
+        setFaceVector([]);
+        setMsg({
+          type: 'error',
+          text: `⚠️ MULTIPLE_FACES DETECTED (${pipelineResult.faceCount} faces found): Please upload a clear photo of a single worker. Group photos or multiple persons cannot be registered.`
         });
       } else if ((pipelineResult.finalDecision === 'DUPLICATE' || pipelineResult.finalDecision === 'MATCH') && pipelineResult.matchedWorkerId) {
         const matchedWorker = allWorkers.find(w => w.id === pipelineResult.matchedWorkerId);
@@ -370,14 +378,14 @@ export const WorkerRegistrationModal: React.FC<WorkerRegistrationModalProps> = (
           setAadharNumber(matchedWorker.aadhar || '');
           setMsg({ 
             type: 'warning', 
-            text: `⚠️ DUPLICATE Flagged! Matched with ${matchedWorker.name} (${pipelineResult.similarityScore}% Biometric Match Confidence).` 
+            text: `⚠️ DUPLICATE Flagged! Matched with existing worker "${matchedWorker.name}" (${pipelineResult.similarityScore}% Biometric Match Confidence).` 
           });
         }
       } else {
         setDuplicateMatch(null);
         setMsg({ 
           type: 'success', 
-          text: `✨ NOT_DUPLICATE: Valid face detected (${(pipelineResult.faceConfidence * 100).toFixed(0)}% confidence). Unique worker verified via FAISS!` 
+          text: `✨ NOT_DUPLICATE: Single face verified (${(pipelineResult.faceConfidence * 100).toFixed(0)}% confidence). Unique worker verified via FAISS Vector Database!` 
         });
       }
     } catch (err) {
